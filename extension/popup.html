@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NeuroSpeech Companion</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="header">
+    <div class="brand">
+      <img src="icons/icon-48.png" alt="NeuroSpeech Logo">
+      <span class="brand-title">NeuroSpeech</span>
+    </div>
+    <div id="statusBadge" class="status-badge" role="status">
+      <span class="status-dot"></span>
+      <span id="statusText">Connecting</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Quick Articulatory Drill</div>
+    <div id="targetText" class="target-text">வணக்கம்</div>
+    <div class="target-sub">Phonetic target: /va-na-k-kam/ (Hello)</div>
+
+    <div class="drill-controls">
+      <button id="btnRecord" class="btn btn-primary">
+        <span id="recordIcon">🎤</span>
+        <span id="recordText">Practice Speech</span>
+      </button>
+      <button id="btnNextWord" class="btn btn-secondary">Next Drill</button>
+    </div>
+
+    <div id="feedbackResult" class="feedback-result" role="status">
+      <div id="feedbackTitle" style="font-weight: 700;">★ 96.2% Target Mastered</div>
+      <div id="feedbackDetail" style="font-size: 10px; color: #cbd5e1; margin-top: 2px;">
+        Acoustic & articulatory alignment verified.
+      </div>
+    </div>
+  </div>
+
+  <div class="stats-grid">
+    <div class="stat-box">
+      <div id="statPractices" class="stat-value">0</div>
+      <div class="stat-label">Drills Today</div>
+    </div>
+    <div class="stat-box">
+      <div id="statStreak" class="stat-value">1 Day</div>
+      <div class="stat-label">Streak</div>
+    </div>
+    <div class="stat-box">
+      <div id="statAccuracy" class="stat-value">95.4%</div>
+      <div class="stat-label">Target Acc</div>
+    </div>
+  </div>
+
+  <div class="actions">
+    <button id="btnOpenPortal" class="btn btn-primary btn-full">
+      Open Full Therapy Space ↗
+    </button>
+    <button id="btnOpenSidePanel" class="btn btn-secondary btn-full">
+      Dock Companion to Side Panel ◨
+    </button>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

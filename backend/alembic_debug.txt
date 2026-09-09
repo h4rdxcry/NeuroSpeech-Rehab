@@ -1,0 +1,66 @@
+DEBUG: Using database URL postgresql+psycopg2://neurospeech:neurospeech_dev@localhost:5432/neurospeech
+DEBUG: Engine URL postgresql+psycopg2://neurospeech:***@localhost:5432/neurospeech
+DEBUG: Connected successfully
+DEBUG: Engine URL postgresql://neurospeech:***@localhost:5432/neurospeech
+DEBUG: Connection failed: (psycopg2.OperationalError) connection to server at "localhost" (::1), port 5432 failed: Connection refused (0x0000274D/10061)
+	Is the server running on that host and accepting TCP/IP connections?
+connection to server at "localhost" (127.0.0.1), port 5432 failed: Connection refused (0x0000274D/10061)
+	Is the server running on that host and accepting TCP/IP connections?
+
+(Background on this error at: https://sqlalche.me/e/20/e3q8)
+DEBUG: Engine URL postgresql://neurospeech:***@localhost:5432/neurospeech
+DEBUG: Connection failed: (psycopg2.OperationalError) connection to server at "localhost" (::1), port 5432 failed: Connection refused (0x0000274D/10061)
+	Is the server running on that host and accepting TCP/IP connections?
+connection to server at "localhost" (127.0.0.1), port 5432 failed: Connection refused (0x0000274D/10061)
+	Is the server running on that host and accepting TCP/IP connections?
+
+(Background on this error at: https://sqlalche.me/e/20/e3q8)
+DEBUG: Engine URL postgresql://neurospeech:***@localhost:5432/neurospeech
+DEBUG: Connected successfully
+DEBUG: Connection failed: (psycopg2.errors.DuplicateObject) constraint "predictions_attempt_id_fkey" for relation "predictions" already exists
+
+[SQL: ALTER TABLE predictions ADD CONSTRAINT predictions_attempt_id_fkey FOREIGN KEY(attempt_id) REFERENCES attempts (id)]
+(Background on this error at: https://sqlalche.me/e/20/f405)
+DEBUG: Engine URL postgresql://neurospeech:***@localhost:5432/neurospeech
+DEBUG: Connected successfully
+DEBUG: Engine URL postgresql://neurospeech:***@localhost:5432/neurospeech
+DEBUG: Connected successfully
+DEBUG: Connection failed: Target database is not up to date.
+DEBUG: Engine URL postgresql://neurospeech:***@localhost:5432/neurospeech
+DEBUG: Connected successfully
+DEBUG: Engine URL postgresql://neurospeech:***@localhost:5432/neurospeech
+DEBUG: Connected successfully
+DEBUG: Connection failed: Target database is not up to date.
+DEBUG: Engine URL postgresql://neurospeech:***@localhost:5432/neurospeech
+DEBUG: Connected successfully
+DEBUG: Connection failed: (psycopg2.errors.DependentObjectsStillExist) cannot drop table model_versions because other objects depend on it
+DETAIL:  constraint predictions_model_id_fkey on table predictions depends on table model_versions
+HINT:  Use DROP ... CASCADE to drop the dependent objects too.
+
+[SQL: 
+DROP TABLE model_versions]
+(Background on this error at: https://sqlalche.me/e/20/2j85)
+DEBUG: Engine URL postgresql://neurospeech:***@localhost:5432/neurospeech
+DEBUG: Connected successfully
+DEBUG: Engine URL postgresql://neurospeech:***@localhost:5432/neurospeech
+DEBUG: Connected successfully
+DEBUG: Engine URL postgresql://neurospeech:***@localhost:5432/neurospeech
+DEBUG: Connected successfully
+DEBUG: Engine URL postgresql://neurospeech:***@localhost:5432/neurospeech
+DEBUG: Connected successfully
+DEBUG: Engine URL postgresql://neurospeech:***@localhost:5432/neurospeech
+DEBUG: Connected successfully
+DEBUG: Engine URL postgresql://neurospeech:***@localhost:5432/neurospeech
+DEBUG: Engine URL postgresql://neurospeech:***@localhost:5432/neurospeech
+DEBUG: Connected successfully
+DEBUG: Connected successfully
+DEBUG: Engine URL postgresql://neurospeech:***@localhost:5432/neurospeech
+DEBUG: Connected successfully
+DEBUG: Engine URL postgresql://neurospeech:***@localhost:5432/neurospeech
+DEBUG: Connected successfully
+DEBUG: Engine URL postgresql://neurospeech:***@localhost:5432/neurospeech
+DEBUG: Connected successfully
+DEBUG: Engine URL postgresql://neurospeech:***@localhost:5432/neurospeech
+DEBUG: Connected successfully
+DEBUG: Engine URL postgresql://neurospeech:***@localhost:5432/neurospeech
+DEBUG: Connected successfully

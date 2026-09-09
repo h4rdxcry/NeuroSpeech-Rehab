@@ -1,0 +1,77 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+.venv-ml/
+*.exe
+.env
+.env*
+*.env
+*.env.*
+.vercel/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.coverage
+htmlcov/
+backend/tests/*.db
+
+# Node
+node_modules/
+dist/
+.vite/
+*.local
+frontend/e2e/browser-fixture.json
+frontend/test-results/
+frontend/playwright-report/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data and recordings
+data/raw/*
+data/bids/*
+!data/bids/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+data/models/*
+!data/models/.gitkeep
+
+# Logs
+logs/
+*.log
+
+# Secrets
+secrets/
+*.pem
+*.key
+
+# Docker
+docker/.env
+
+# ML Weights & Experiments (Exceed GitHub 100MB Limit)
+*.pt
+*.bin
+*.pth
+*.onnx
+*.safetensors
+*.tar.gz
+*.zip
+ml_training/mlruns/
+ml_training/outputs/
+mlruns/
+work/
+

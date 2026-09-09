@@ -1,0 +1,85 @@
+/** @type {import('tailwindcss').Config} */
+export default {
+  content: [
+    "./index.html",
+    "./src/**/*.{js,ts,jsx,tsx}",
+  ],
+  darkMode: "class",
+  theme: {
+    extend: {
+      colors: {
+        primary: "#0058bd",
+        "primary-container": "#2771df",
+        "primary-fixed": "#d8e2ff",
+        "primary-fixed-dim": "#adc6ff",
+        "on-primary": "#ffffff",
+        "on-primary-container": "#fefcff",
+        "on-primary-fixed": "#001a41",
+        "on-primary-fixed-variant": "#004494",
+        "inverse-primary": "#adc6ff",
+
+        secondary: "#712ae2",
+        "secondary-container": "#8a4cfc",
+        "secondary-fixed": "#eaddff",
+        "secondary-fixed-dim": "#d2bbff",
+        "on-secondary": "#ffffff",
+        "on-secondary-container": "#fffbff",
+        "on-secondary-fixed": "#25005a",
+        "on-secondary-fixed-variant": "#5a00c6",
+
+        tertiary: "#005b3d",
+        "tertiary-container": "#007650",
+        "tertiary-fixed": "#6ffbbe",
+        "tertiary-fixed-dim": "#4edea3",
+        "on-tertiary": "#ffffff",
+        "on-tertiary-container": "#76ffc2",
+        "on-tertiary-fixed": "#002113",
+        "on-tertiary-fixed-variant": "#005236",
+
+        surface: "#f8f9ff",
+        "surface-bright": "#f8f9ff",
+        "surface-dim": "#cbdbf5",
+        "surface-container-lowest": "#ffffff",
+        "surface-container-low": "#eff4ff",
+        "surface-container": "#e5eeff",
+        "surface-container-high": "#dce9ff",
+        "surface-container-highest": "#d3e4fe",
+        "surface-variant": "#d3e4fe",
+        "surface-tint": "#005ac1",
+
+        "on-surface": "#0b1c30",
+        "on-surface-variant": "#4a4455",
+        background: "#f8f9ff",
+        "on-background": "#0b1c30",
+        "inverse-surface": "#213145",
+        "inverse-on-surface": "#eaf1ff",
+
+        outline: "#7b7487",
+        "outline-variant": "#ccc3d8",
+
+        error: "#ba1a1a",
+        "error-container": "#ffdad6",
+        "on-error": "#ffffff",
+        "on-error-container": "#93000a",
+      },
+      borderRadius: {
+        DEFAULT: "1rem",
+        lg: "2rem",
+        xl: "3rem",
+        full: "9999px",
+      },
+      fontFamily: {
+        outfit: ["Outfit", "sans-serif"],
+        manrope: ["Manrope", "sans-serif"],
+        inter: ["Inter", "sans-serif"],
+      },
+      boxShadow: {
+        "stitch-sm": "0 2px 8px rgba(11, 28, 48, 0.04)",
+        "stitch-card": "0 4px 24px -4px rgba(15, 23, 42, 0.05), 0 1px 3px rgba(0, 0, 0, 0.02)",
+        "stitch-elevated": "0 12px 36px -6px rgba(15, 23, 42, 0.08), 0 2px 8px rgba(0, 0, 0, 0.03)",
+        "gemini-glow": "0 0 35px rgba(124, 58, 237, 0.25), 0 4px 20px rgba(0, 88, 189, 0.12)",
+      },
+    },
+  },
+  plugins: [],
+}

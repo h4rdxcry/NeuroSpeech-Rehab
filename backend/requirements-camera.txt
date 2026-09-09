@@ -1,0 +1,5 @@
+-r requirements-test.txt
+# Keep MediaPipe's optional JAX and OpenCV dependencies compatible with the ML baseline.
+opencv-contrib-python==4.9.0.80
+jax==0.4.28
+jaxlib==0.4.28

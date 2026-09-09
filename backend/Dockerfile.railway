@@ -1,0 +1,27 @@
+FROM python:3.11-slim
+
+# System dependencies for ML (torch, wav2vec2, etc.)
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    libsndfile1 \
+    ffmpeg \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install Python dependencies (CPU-only torch for cloud)
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir torch==2.1.0 torchaudio==2.1.0 --index-url https://download.pytorch.org/whl/cpu && \
+    pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+# Pre-download Wav2Vec2 model at build time (cached in image)
+RUN python -c "from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor; Wav2Vec2Processor.from_pretrained('facebook/wav2vec2-base-960h'); Wav2Vec2ForCTC.from_pretrained('facebook/wav2vec2-base-960h')" || true
+
+EXPOSE 8000
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

@@ -1,0 +1,9 @@
+torch==2.3.1+cu121
+torchaudio==2.3.1+cu121
+transformers==4.46.3
+datasets==3.2.0
+evaluate==0.4.3
+jiwer==3.1.0
+librosa==0.10.1
+mlflow==2.12.1
+soundfile==0.12.1

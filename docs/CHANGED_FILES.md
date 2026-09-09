@@ -1,0 +1,57 @@
+# Integration files changed
+
+Frontend status is compared against the pre-Stitch source/configuration hash manifest. Non-frontend changes are explicitly identified integration work; a Git diff is unavailable. Generated evidence is under work/verification-20260909.
+
+- frontend/.env.example — added
+- frontend/e2e/patient-workflow.spec.ts — modified
+- frontend/index.html — modified
+- frontend/package-lock.json — modified
+- frontend/package.json — modified
+- frontend/playwright.config.ts — modified
+- frontend/src/App.tsx — modified
+- frontend/src/components/clinician/ClinicianLayout.tsx — modified
+- frontend/src/components/clinician/ClinicianSessions.tsx — modified
+- frontend/src/components/PageControls.tsx — added
+- frontend/src/components/patient/Login.tsx — modified
+- frontend/src/components/patient/PatientHome.tsx — modified
+- frontend/src/components/patient/PatientLayout.tsx — modified
+- frontend/src/components/patient/PatientSession.tsx — modified
+- frontend/src/components/patient/PatientSettings.tsx — added
+- frontend/src/components/research/DatasetDetails.tsx — added
+- frontend/src/components/research/RecordingResults.tsx — added
+- frontend/src/components/research/ResearchAnnotations.tsx — modified
+- frontend/src/components/research/ResearchDashboard.tsx — modified
+- frontend/src/components/research/ResearchDatasets.tsx — modified
+- frontend/src/components/research/ResearchLayout.tsx — modified
+- frontend/src/components/research/ResearchModels.tsx — added
+- frontend/src/components/research/ResearchParticipants.tsx — added
+- frontend/src/components/research/ResearchRecordings.tsx — modified
+- frontend/src/components/WorkspaceLayout.tsx — added
+- frontend/src/index.css — modified
+- frontend/src/lib/preferences.ts — added
+- frontend/src/lib/stream.test.ts — added
+- frontend/src/lib/types.ts — modified
+- frontend/src/lib/usePagedRecords.ts — added
+- backend/app/schemas/dataset.py — integration work; no pre-change hash snapshot for this non-frontend file
+- backend/tests/test_dataset_registry.py — integration work; no pre-change hash snapshot for this non-frontend file
+- backend/tests/browser_seed.py — integration work; no pre-change hash snapshot for this non-frontend file
+- ml_training/src/ml_training/trainer.py — integration work; no pre-change hash snapshot for this non-frontend file
+- ml_training/train_baseline.py — integration work; no pre-change hash snapshot for this non-frontend file
+- ml_training/tests/test_evaluation_regression.py — integration work; no pre-change hash snapshot for this non-frontend file
+- README.md — integration work; no pre-change hash snapshot for this non-frontend file
+- docs/STITCH_FEATURE_MAP.md — integration work; no pre-change hash snapshot for this non-frontend file
+- docs/VERIFICATION_REPORT.md — integration work; no pre-change hash snapshot for this non-frontend file
+- docs/TRACEABILITY_MATRIX.md — integration work; no pre-change hash snapshot for this non-frontend file
+- docs/PROJECT_ROADMAP.md — integration work; no pre-change hash snapshot for this non-frontend file
+- docs/LIMITATIONS.md — integration work; no pre-change hash snapshot for this non-frontend file
+- docs/RESEARCH_METRICS.md — integration work; no pre-change hash snapshot for this non-frontend file
+- docs/INTEGRATION_REPORT.md — integration work; no pre-change hash snapshot for this non-frontend file
+- docs/CHANGED_FILES.md — integration work; no pre-change hash snapshot for this non-frontend file
+- scripts/build_research_metrics.py — integration work; no pre-change hash snapshot for this non-frontend file
+- scripts/check_live_site.cjs — integration work; no pre-change hash snapshot for this non-frontend file
+- scripts/evaluate_validation.py — integration work; no pre-change hash snapshot for this non-frontend file
+- scripts/freeze_delivery.py — integration work; no pre-change hash snapshot for this non-frontend file
+- scripts/local_checkpoint.py — integration work; no pre-change hash snapshot for this non-frontend file
+- scripts/measure_signal_fixtures.py — integration work; no pre-change hash snapshot for this non-frontend file
+- scripts/setup_local_access.py — integration work; no pre-change hash snapshot for this non-frontend file
+- scripts/start-local.ps1 — integration work; no pre-change hash snapshot for this non-frontend file

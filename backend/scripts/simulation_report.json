@@ -1,0 +1,89 @@
+{
+  "timestamp": "2026-09-10T00:13:01Z",
+  "environment": "development",
+  "auth_user": "patient@neurospeech.dev",
+  "session_id": "4e6666f2-b354-45a2-9007-677238b27da7",
+  "attempt_id": "f13a590d-03ea-4aef-920e-abcf4d9771f3",
+  "recording_id": "d5200974-82b9-45a8-b6b2-6b393ee2f6e7",
+  "video_input": {
+    "file": "patient_speech_sample.mp4",
+    "resolution": "426x240",
+    "fps": 29.97,
+    "total_frames": 360,
+    "duration_seconds": 12.01
+  },
+  "kinematics_tracking_performance": {
+    "total_frames_processed": 360,
+    "processing_time_seconds": 0.042,
+    "processing_fps": 8650.23,
+    "mean_frame_latency_ms": 0.03,
+    "max_frame_latency_ms": 0.21
+  },
+  "biomechanical_metrics": {
+    "jaw_displacement_mm": {
+      "min": 5.01,
+      "mean": 7.46,
+      "max": 12.2
+    },
+    "lip_aperture_ratio": {
+      "min": 0.22,
+      "mean": 0.329,
+      "max": 0.54
+    },
+    "mouth_width_ratio": {
+      "min": 0.48,
+      "mean": 0.55,
+      "max": 0.62
+    }
+  },
+  "biofeedback_semg_metrics": {
+    "left_zygomaticus_uv": {
+      "mean": 22.61,
+      "peak": 31.93
+    },
+    "right_zygomaticus_uv": {
+      "mean": 22.49,
+      "peak": 31.56
+    },
+    "bilateral_symmetry_pct": {
+      "mean": 98.46,
+      "min": 95.01
+    }
+  },
+  "audio_and_asr_pipeline": {
+    "audio_format": "PCM16 Mono 16000Hz",
+    "chunks_sent": 120,
+    "server_messages_received": 122,
+    "asr_prediction": "\u0baa\u0baa\u0baa\u0b95\u0ba4\u0b95",
+    "model_name": "facebook/wav2vec2-base",
+    "model_scope": "Tamil speech research baseline"
+  },
+  "signal_quality": {
+    "recording_id": "d5200974-82b9-45a8-b6b2-6b393ee2f6e7",
+    "quality_state": "GOOD",
+    "quality_score": null,
+    "artifact_ratio": null,
+    "missing_data_ratio": null,
+    "synchronization_status": null,
+    "sampling_rate_valid": null,
+    "channel_status": null,
+    "missing_channels": null,
+    "corrupted_files": null,
+    "clipping": null,
+    "artifact_indicators": {
+      "rms": 0.09895,
+      "peak_normalized": 0.6649,
+      "clipping_ratio": 0.0,
+      "duration_seconds": 12.0,
+      "sample_count": 192000,
+      "sample_rate": 16000
+    },
+    "sampling_problems": null,
+    "synchronization_problems": null,
+    "rejection_reason": null,
+    "qc_timestamp": "2026-09-09T13:12:49.326569Z",
+    "notes": null,
+    "id": "dde9c07c-fc7a-4b26-b610-965a64cc2cbf",
+    "created_at": "2026-09-09T18:42:49.236094Z"
+  }
+}
