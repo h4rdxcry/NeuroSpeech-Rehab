@@ -18,7 +18,7 @@ PYTHON_EXE = ROOT / "backend" / ".venv-ml" / "Scripts" / "python.exe"
 if not PYTHON_EXE.exists():
     PYTHON_EXE = Path(sys.executable)
 
-CLOUDFLARED = ROOT / "cloudflared.exe"
+CLOUDFLARED = ROOT / "tools" / "cloudflared.exe" if (ROOT / "tools" / "cloudflared.exe").exists() else ROOT / "cloudflared.exe"
 VERCEL_PUBLIC_URL = "https://neurospeech.vercel.app"
 
 
