@@ -1,32 +1,24 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useSearchParams } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
+import { motion, AnimatePresence } from "framer-motion";
 import {
-  ArrowRight,
   Camera,
-  Check,
-  CheckCircle,
-  Gamepad2,
-  Mic,
   Play,
-  RotateCcw,
-  SkipForward,
   Sparkles,
   Volume2,
   Brain,
   Activity,
-  ShieldCheck,
-  Award,
-  Waves,
-  Flame,
   CheckCircle2,
   Star,
   Trophy,
   Lock,
   Map as MapIcon,
-  ChevronLeft,
-  ChevronRight,
   X,
+  Mic,
+  MicOff,
+  Check,
+  Zap,
 } from "lucide-react";
 import {
   getLevelData,
@@ -34,171 +26,176 @@ import {
   REHAB_TIER_DESCRIPTIONS,
 } from "../../lib/rehabCurriculum";
 import { useGameProgressStore } from "../../lib/gameProgressStore";
-import {
-  evaluateMultimodalAttempt,
-  type MultimodalEvaluationResult,
-} from "../../lib/multimodalEvaluator";
 import { api, listAll } from "../../lib/api";
 import { capturePcm } from "../../lib/pcmCapture";
-import { useSessionWebSocket } from "../../lib/useSessionWebSocket";
 import { FaceMeshTracker, type ArticulatoryKinematics } from "../../lib/faceMeshTracker";
 import { LipReadingClassifier, type LipReadingPrediction } from "../../lib/lipReadingClassifier";
 import { AcousticSpeechDetector, type SpeechPredictionResult } from "../../lib/acousticSpeechDetector";
-import RehabGame from "./RehabGame";
 import type {
-  Attempt,
-  Exercise,
   Patient,
-  Prediction,
-  Recording,
   Session,
-  SessionExercise,
-  SignalQuality,
 } from "../../lib/types";
 
-interface WebSpeechRecognition {
-  continuous: boolean;
-  interimResults: boolean;
-  lang: string;
-  onresult: ((event: { resultIndex: number; results: Array<Array<{ transcript: string }>> }) => void) | null;
-  onerror: (() => void) | null;
-  start: () => void;
-  stop: () => void;
+// Pleasant soft positive Web Audio API chime on level complete
+function playCelebrationChime() {
+  if (typeof window === "undefined") return;
+  try {
+    const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+    if (!AudioCtx) return;
+    const ctx = new AudioCtx();
+    const notes = [523.25, 659.25, 783.99]; // C5, E5, G5 major triad
+    notes.forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.001, ctx.currentTime + idx * 0.1);
+      gain.gain.exponentialRampToValueAtTime(0.12, ctx.currentTime + idx * 0.1 + 0.04);
+      gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + idx * 0.1 + 0.5);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(ctx.currentTime + idx * 0.1);
+      osc.stop(ctx.currentTime + idx * 0.1 + 0.55);
+    });
+  } catch {
+    // AudioContext permission may require user gesture
+  }
 }
 
-// Standard Clinical Rehabilitation Phoneme & Word Presets from Google Stitch
-const CLINICAL_TARGET_PRESETS = [
-  {
-    id: "morning",
-    phrase: "Morning sunlight brings bright moments",
-    phonemes: "/m/, /b/, /p/",
-    type: "bilabial",
-    desc: "Bilabial flow · Nasal resonance & plosive closure",
-  },
-  {
-    id: "vanakkam",
-    phrase: "வணக்கம் (Vanakkam)",
-    phonemes: "/v/, /n/, /k/, /m/",
-    type: "bilabial",
-    desc: "Tamil Greeting · Labial glide & nasal harmony",
-  },
-  {
-    id: "amma",
-    phrase: "அம்மா (Amma)",
-    phonemes: "/m/",
-    type: "bilabial",
-    desc: "Bilabial Sustained Closure · Gentle phonemic glide",
-  },
-  {
-    id: "ddk",
-    phrase: "PA - TA - KA",
-    phonemes: "/p/, /t/, /k/",
-    type: "open",
-    desc: "Diadochokinetic Agility · Rapid labial, alveolar, velar sequencing",
-  },
-  {
-    id: "vowels",
-    phrase: "A - E - I - O - U",
-    phonemes: "/a/, /e/, /i/, /o/, /u/",
-    type: "spread",
-    desc: "Articulatory Range · Quadrilateral vowel expansion",
-  },
-];
-
 export default function PatientSession() {
-  const [searchParams, setSearchParams] = useSearchParams();
-  const queryClient = useQueryClient();
+  const [searchParams] = useSearchParams();
   const requestedSessionId = searchParams.get("sessionId");
-  const [selectedExerciseId, setSelectedExerciseId] = useState("");
-  const [customPhrase, setCustomPhrase] = useState(CLINICAL_TARGET_PRESETS[0].phrase);
-  const [targetType, setTargetType] = useState<string>("bilabial");
-  const [attempt, setAttempt] = useState<Attempt | null>(null);
-  const [mediaStream, setMediaStream] = useState<MediaStream | null>(null);
-  const mediaRef = useRef<MediaStream | null>(null);
-  const stopCaptureRef = useRef<(() => void) | null>(null);
-  const stopTimerRef = useRef<ReturnType<typeof setTimeout>>();
-  const mounted = useRef(true);
-  const [mediaError, setMediaError] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
-  const [creatingSession, setCreatingSession] = useState(false);
-  const [creatingExercise, setCreatingExercise] = useState(false);
-  const [starting, setStarting] = useState(false);
-  const [stopping, setStopping] = useState(false);
-  const [finishingSession, setFinishingSession] = useState(false);
-  const busyRef = useRef(false);
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const hudCanvasRef = useRef<HTMLCanvasElement>(null);
-  const animFrameRef = useRef<number>();
 
-  // 100-Level Speech Rehabilitation Game State
+  // 100-Level Game Progress Store (Zustand)
   const {
     currentLevel,
     unlockedLevel,
     levelStars,
-    levelScores,
     totalXp,
     streakDays,
     setCurrentLevel,
-    nextLevel,
-    prevLevel,
     recordLevelCompletion,
   } = useGameProgressStore();
 
   const [levelMapOpen, setLevelMapOpen] = useState(false);
   const [selectedTierTab, setSelectedTierTab] = useState<1 | 2 | 3 | 4 | 5>(1);
-  const [showLevelCelebration, setShowLevelCelebration] = useState(false);
   const [speechLang, setSpeechLang] = useState<"ta-IN" | "en-US">("ta-IN");
-  const [lastEvaluation, setLastEvaluation] = useState<MultimodalEvaluationResult | null>(null);
+  const [isPlayingAudioGuide, setIsPlayingAudioGuide] = useState(false);
+  const [vocalEnergy, setVocalEnergy] = useState(0);
+  const [recognizedSpeech, setRecognizedSpeech] = useState<string>("");
+  const [displayMode, setDisplayMode] = useState<"camera" | "sample" | "avatar">("camera");
+  const [isLiveListening, setIsLiveListening] = useState<boolean>(true);
+  const [kinematics, setKinematics] = useState<ArticulatoryKinematics | null>(null);
 
+  // Active level data from 100-level curriculum
   const activeLevelData = useMemo(() => getLevelData(currentLevel), [currentLevel]);
+  const targetPhrase = activeLevelData.englishText;
+  const targetTamil = activeLevelData.tamilText;
+
+  // Real-Time Lip-Reading & Acoustic Speech Classifiers
   const lipClassifierRef = useRef<LipReadingClassifier>(new LipReadingClassifier());
   const speechDetectorRef = useRef<AcousticSpeechDetector>(new AcousticSpeechDetector(activeLevelData));
   const [lipPrediction, setLipPrediction] = useState<LipReadingPrediction | null>(null);
   const [speechPrediction, setSpeechPrediction] = useState<SpeechPredictionResult | null>(null);
-  const [isLiveListening, setIsLiveListening] = useState<boolean>(true);
+
+  // Game Loop State Management
+  const [gameState, setGameState] = useState<"listening" | "success" | "stepping_up">("listening");
+  const levelClearingLock = useRef(false);
+  const SUCCESS_THRESHOLD = 85;
+
+  // DOM Refs
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const hudCanvasRef = useRef<HTMLCanvasElement>(null);
+  const mediaRef = useRef<MediaStream | null>(null);
+  const [mediaStream, setMediaStream] = useState<MediaStream | null>(null);
+  const [mediaError, setMediaError] = useState<string | null>(null);
+  const animFrameRef = useRef<number | null>(null);
+  const mounted = useRef(false);
   const prevSessionIdRef = useRef<string | null>(null);
-
-
-
-  // Interactive State Simulator & Mode Toggles
-  const [simulatedState, setSimulatedState] = useState<string | null>(null);
-  const [isGameMode, setIsGameMode] = useState(false);
-  const [isPlayingAudioGuide, setIsPlayingAudioGuide] = useState(false);
-  const [clinicianNoteOpen, setClinicianNoteOpen] = useState(false);
-  const [vocalEnergy, setVocalEnergy] = useState(0);
-  const [recognizedSpeech, setRecognizedSpeech] = useState<string>("");
-  const [isSimulatingBiofeedback, setIsSimulatingBiofeedback] = useState(false);
-  const [displayMode, setDisplayMode] = useState<"camera" | "sample" | "avatar">("camera");
-  const avatarCanvasRef = useRef<HTMLCanvasElement>(null);
-  const recognitionRef = useRef<WebSpeechRecognition | null>(null);
-  const [kinematics, setKinematics] = useState<ArticulatoryKinematics | null>(null);
-  const [offlinePrediction, setOfflinePrediction] = useState<Prediction | null>(null);
-  const [offlineAttempts, setOfflineAttempts] = useState<Attempt[]>([]);
-
   const kinematicsRef = useRef<ArticulatoryKinematics | null>(null);
   kinematicsRef.current = kinematics;
   const vocalEnergyRef = useRef<number>(vocalEnergy);
   vocalEnergyRef.current = vocalEnergy;
 
-  const fundamentalFreq = vocalEnergy > 0.02 || kinematics ? Math.round(175 + vocalEnergy * 120 + (kinematics?.lipApertureRatio ?? 0.2) * 40) : null;
+  // Calculated Fundamental Frequency (Pitch in Hz)
+  const fundamentalFreq = vocalEnergy > 0.02 || kinematics
+    ? Math.round(165 + vocalEnergy * 110 + (kinematics?.lipApertureRatio ?? 0.15) * 35)
+    : null;
 
-  const liveProgress = useMemo(() => {
+  // Bilateral facial symmetry calculation
+  const bilateralSymmetry = useMemo(() => {
+    if (!kinematics) return 96.5;
+    const dev = Math.abs(kinematics.mouthWidthRatio - 0.48);
+    return Math.max(78, Math.min(99.4, 98.5 - dev * 18));
+  }, [kinematics]);
+
+  // Current Multimodal Confidence (0 to 100)
+  // Fuses: Lip Kinematics (35%), Spoken Transcript Match (40%), Phonation & Tone (25%)
+  const currentConfidence = useMemo(() => {
+    if (gameState !== "listening") return 0;
     const lipScore = lipPrediction ? lipPrediction.confidence : 0;
     const speechScore = speechPrediction ? speechPrediction.confidence : 0;
     const toneScore = vocalEnergy > 0.04 ? 85 : 30;
     return Math.min(100, Math.round(lipScore * 0.35 + speechScore * 0.40 + toneScore * 0.25));
-  }, [lipPrediction, speechPrediction, vocalEnergy]);
+  }, [lipPrediction, speechPrediction, vocalEnergy, gameState]);
 
+  // Haptic feedback for accessibility
   const triggerHaptic = useCallback(() => {
     if (typeof window !== "undefined" && "vibrate" in navigator) {
       try {
-        navigator.vibrate(20);
-      } catch {
-        /* ignore vibration unsupported */
-      }
+        navigator.vibrate(25);
+      } catch {}
     }
   }, []);
 
+  // ─────────────────────────────────────────────────────────────────────────────
+  // ISSUE 1: THE STRICT GAME LOOP LISTENER & STEP-UP LOGIC
+  // ─────────────────────────────────────────────────────────────────────────────
+  const handleLevelComplete = useCallback(() => {
+    setGameState("success");
+    triggerHaptic();
+    playCelebrationChime();
+
+    const score = Math.max(currentConfidence, SUCCESS_THRESHOLD);
+    const stars = score >= 94 ? 3 : score >= 88 ? 2 : 1;
+    const xp = 150 + stars * 50;
+
+    // 1. Persist level completion in Zustand store
+    const { nextLvl } = recordLevelCompletion(currentLevel, score, stars, xp);
+
+    // 2. Smooth transition: after 1.2s celebration, step up to next level
+    setTimeout(() => {
+      setGameState("stepping_up");
+      setTimeout(() => {
+        // Advance current level
+        setCurrentLevel(nextLvl);
+
+        // Reset tracking buffers for the new target word
+        lipClassifierRef.current.reset();
+        speechDetectorRef.current.setTargetLevel(getLevelData(nextLvl));
+        setRecognizedSpeech("");
+        setLipPrediction(null);
+        setSpeechPrediction(null);
+        setVocalEnergy(0);
+
+        // Return to listening state on new level
+        setGameState("listening");
+        levelClearingLock.current = false;
+      }, 550);
+    }, 1200);
+  }, [currentConfidence, currentLevel, recordLevelCompletion, setCurrentLevel, triggerHaptic]);
+
+  // Strict listener: when currentConfidence >= 85%, trigger handleLevelComplete
+  useEffect(() => {
+    if (gameState === "listening" && !levelClearingLock.current && currentConfidence >= SUCCESS_THRESHOLD) {
+      levelClearingLock.current = true;
+      handleLevelComplete();
+    }
+  }, [currentConfidence, gameState, handleLevelComplete]);
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // BACKEND / SESSION DATA (Non-blocking fallback)
+  // ─────────────────────────────────────────────────────────────────────────────
   const profileQuery = useQuery({
     queryKey: ["patient-profile"],
     queryFn: () => api.get<Patient>("/api/v1/participants/me").catch(() => null),
@@ -208,7 +205,7 @@ export default function PatientSession() {
     queryFn: () => listAll<Session>("/api/v1/sessions/sessions").catch(() => []),
   });
   const { data: patient } = profileQuery;
-  const { data: sessions, isLoading: sessionsLoading } = sessionQuery;
+  const { data: sessions } = sessionQuery;
 
   const fallbackSession = useMemo<Session>(() => ({
     id: "offline-patient-session-1",
@@ -225,159 +222,16 @@ export default function PatientSession() {
     return sessions?.find((item) => ["planned", "scheduled", "in_progress"].includes(item.status)) ?? sessions?.[0] ?? fallbackSession;
   }, [requestedSessionId, sessions, fallbackSession]);
 
-  const exerciseQuery = useQuery({
-    queryKey: ["exercises"],
-    queryFn: () => listAll<Exercise>("/api/v1/exercises/exercises").catch(() => []),
-  });
-  const { data: exercises } = exerciseQuery;
-
-  const fallbackSessionExercise = useMemo<SessionExercise>(() => ({
-    id: "offline-session-ex-1",
-    session_id: session.id,
-    exercise_id: "demo-ex-bilabial",
-    order_index: 1,
-    status: "in_progress",
-    created_at: new Date().toISOString(),
-  }), [session.id]);
-
-  const sessionExerciseQuery = useQuery({
-    queryKey: ["session-exercises", session?.id],
-    queryFn: () => listAll<SessionExercise>(`/api/v1/session-exercises/session-exercises?session_id=${session!.id}`).catch(() => []),
-    enabled: Boolean(session?.id && !session.id.startsWith("offline-")),
-  });
-  const { data: sessionExercises } = sessionExerciseQuery;
-
-  const selectedSessionExercise = useMemo(
-    () =>
-      sessionExercises?.find((item) => item.id === selectedExerciseId) ??
-      [...(sessionExercises ?? [])].sort((a, b) => a.order_index - b.order_index)[0] ??
-      fallbackSessionExercise,
-    [selectedExerciseId, sessionExercises, fallbackSessionExercise]
-  );
-
-  const targetPhrase = customPhrase || activeLevelData.englishText;
-  const targetTamil = activeLevelData.tamilText;
-  const targetViseme = activeLevelData.targetViseme;
-
-  const attemptQuery = useQuery({
-    queryKey: ["attempts", selectedSessionExercise?.id],
-    queryFn: () => listAll<Attempt>(`/api/v1/attempts/attempts?session_exercise_id=${selectedSessionExercise!.id}`).catch(() => []),
-    enabled: Boolean(selectedSessionExercise && !selectedSessionExercise.id.startsWith("offline-")),
-  });
-  const allAttempts = useMemo(() => [...(attemptQuery.data ?? []), ...offlineAttempts], [attemptQuery.data, offlineAttempts]);
-  const { data: attempts } = { data: allAttempts };
-
-  const currentAttempt = attempt?.session_exercise_id === selectedSessionExercise?.id ? attempt : null;
-  const latestAttempt = [...(attempts ?? [])].sort((a, b) => b.attempt_number - a.attempt_number)[0];
-  const displayedAttempt = currentAttempt ?? latestAttempt;
-
-  const {
-    connectionState,
-    recordingId,
-    predictionIds,
-    statusMessage,
-    error: socketError,
-    startStream,
-    sendAudio,
-    stopStream,
-    closeStream,
-  } = useSessionWebSocket(session?.id ?? null);
-
-  const predictionQuery = useQuery({
-    queryKey: ["session-predictions", displayedAttempt?.id, currentAttempt ? predictionIds.length : 0],
-    queryFn: () => listAll<Prediction>(`/api/v1/predictions/predictions?attempt_id=${displayedAttempt!.id}`).catch(() => []),
-    enabled: Boolean(displayedAttempt && !displayedAttempt.id.startsWith("attempt-")),
-  });
-  const prediction = [...(predictionQuery.data ?? [])].sort((a, b) => b.timestamp.localeCompare(a.timestamp))[0] ?? offlinePrediction;
-
-  const recordingQuery = useQuery({
-    queryKey: ["session-recordings", session?.id, displayedAttempt?.id, connectionState],
-    queryFn: () => listAll<Recording>(`/api/v1/recordings/recordings?session_id=${session!.id}&modality=AUDIO`).catch(() => []),
-    enabled: Boolean(session && displayedAttempt && !session.id.startsWith("offline-")),
-  });
-  const persistedRecording = recordingQuery.data
-    ?.filter((item) => item.attempt_id === displayedAttempt?.id)
-    .sort((a, b) => b.start_timestamp.localeCompare(a.start_timestamp))[0];
-
-  const qualityRecordingId = currentAttempt && connectionState === "stopped" ? recordingId : persistedRecording?.id;
-  const qualityQuery = useQuery({
-    queryKey: ["signal-quality", qualityRecordingId, predictionIds.length, connectionState],
-    queryFn: () => api.get<SignalQuality>(`/api/v1/signal-quality/signal-quality/${qualityRecordingId}`).catch(() => null),
-    enabled: Boolean(qualityRecordingId),
-  });
-
-  const sessionFinished = session?.status === "completed";
-  const busy = busyRef.current || starting || stopping || finishingSession;
-
-  const createSession = useCallback(async () => {
-    if (creatingSession) return;
-    setCreatingSession(true);
-    setActionError(null);
-    try {
-      const pId = patient?.participant_id || "demo-participant-id";
-      const patId = patient?.id || "demo-patient-id";
-      const nextNumber = (sessions?.reduce((max, item) => Math.max(max, item.session_number), 0) ?? 0) + 1;
-      const created = await api.post<Session>("/api/v1/sessions/sessions", {
-        participant_id: pId,
-        patient_id: patId,
-        session_date: new Date().toLocaleDateString("en-CA"),
-        session_number: nextNumber,
-      });
-      await queryClient.invalidateQueries({ queryKey: ["patient-sessions"] });
-      setSearchParams({ sessionId: created.id });
-    } catch (error) {
-      setActionError(error instanceof Error ? error.message : "Unable to initialize session.");
-    } finally {
-      setCreatingSession(false);
-    }
-  }, [creatingSession, patient, sessions, queryClient, setSearchParams]);
-
-  const autoAddExercise = useCallback(async (exId: string) => {
-    if (!session || creatingExercise) return;
-    setCreatingExercise(true);
-    try {
-      await api.post<SessionExercise>("/api/v1/session-exercises/session-exercises", {
-        session_id: session.id,
-        exercise_id: exId,
-        order_index: 1,
-      });
-      await queryClient.invalidateQueries({ queryKey: ["session-exercises", session.id] });
-    } catch {
-      // Non-blocking fallback
-    } finally {
-      setCreatingExercise(false);
-    }
-  }, [session, creatingExercise, queryClient]);
-
-  useEffect(() => {
-    if (!sessionsLoading && !session && !creatingSession && patient?.participant_id) {
-      void createSession();
-    }
-  }, [sessionsLoading, session, patient, creatingSession, createSession]);
-
-  useEffect(() => {
-    if (session && exercises?.length && (!sessionExercises || sessionExercises.length === 0) && !creatingExercise) {
-      const firstExercise = exercises.find((e) => e.is_active && e.target_modalities.includes("AUDIO")) || exercises[0];
-      if (firstExercise) {
-        void autoAddExercise(firstExercise.id);
-      }
-    }
-  }, [session, exercises, sessionExercises, creatingExercise, autoAddExercise]);
-
-  const stopAudioCapture = useCallback(() => {
-    clearTimeout(stopTimerRef.current);
-    stopCaptureRef.current?.();
-    stopCaptureRef.current = null;
-    setVocalEnergy(0);
-  }, []);
-
+  // ─────────────────────────────────────────────────────────────────────────────
+  // MEDIA STREAM ACQUISITION & LIFECYCLE
+  // ─────────────────────────────────────────────────────────────────────────────
   const releaseMedia = useCallback(() => {
-    stopAudioCapture();
-    mediaRef.current?.getTracks().forEach((track) => track.stop());
-    mediaRef.current = null;
-    if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+    if (mediaRef.current) {
+      mediaRef.current.getTracks().forEach((track) => track.stop());
+      mediaRef.current = null;
+    }
     if (mounted.current) setMediaStream(null);
-  }, [stopAudioCapture]);
+  }, []);
 
   const enableMedia = useCallback(async () => {
     setMediaError(null);
@@ -386,62 +240,32 @@ export default function PatientSession() {
       return mediaRef.current;
     }
 
-    // Modern PC browsers require getUserMedia to run in secure contexts (HTTPS or localhost)
-    const isSecureContext = typeof window !== "undefined" && (
-      window.isSecureContext ||
-      window.location.hostname === "localhost" ||
-      window.location.hostname === "127.0.0.1" ||
-      window.location.protocol === "https:"
-    );
-
-    if (!isSecureContext) {
-      setMediaError(
-        "Browsers require a secure HTTPS or localhost context to access webcam and microphone hardware. Click '🎬 Test Video' below for instant tracking, or access via your secure domain."
-      );
-      return null;
-    }
-
     if (!navigator.mediaDevices?.getUserMedia) {
-      setMediaError("This browser environment does not support media capture. Switch to '🎬 Test Video' mode.");
+      setMediaError("Webcam/microphone hardware not accessible in this environment. Using Benchmark Video.");
+      setDisplayMode("sample");
       return null;
     }
 
-    // Desktop PC Web Workstation camera constraint ladder (supports HD/Full HD desktop webcams)
     const constraintTiers: MediaStreamConstraints[] = [
       {
         video: { width: { ideal: 1280, min: 640 }, height: { ideal: 720, min: 480 }, frameRate: { ideal: 30, max: 60 } },
         audio: { echoCancellation: true, noiseSuppression: true, sampleRate: 16000 },
       },
-      {
-        video: { width: { ideal: 640 }, height: { ideal: 480 } },
-        audio: true,
-      },
+      { video: { width: { ideal: 640 }, height: { ideal: 480 } }, audio: true },
       { video: true, audio: true },
       { video: true },
     ];
 
     let stream: MediaStream | null = null;
-    let lastError: unknown = null;
-
     for (const constraints of constraintTiers) {
       try {
         stream = await navigator.mediaDevices.getUserMedia(constraints);
         if (stream) break;
-      } catch (err) {
-        lastError = err;
-      }
+      } catch {}
     }
 
     if (!stream) {
-      const errName = (lastError as { name?: string })?.name;
-      if (lastError instanceof DOMException && (errName === "NotAllowedError" || errName === "PermissionDeniedError")) {
-        setMediaError("Camera permission was denied in browser settings. You can enable it in the address bar (lock icon) or click '🎬 Test Video' for zero-permission tracking.");
-      } else if (errName === "NotFoundError" || errName === "DevicesNotFoundError") {
-        setMediaError("No webcam hardware detected on this PC. Switching to '🎬 Test Video' mode.");
-        setDisplayMode("sample");
-      } else {
-        setMediaError("Unable to access PC camera hardware. Click '🎬 Test Video' to test live tracking with our clinical benchmark video.");
-      }
+      setMediaError("Camera permission denied or unavailable. Click '🎬 Benchmark Video' below for instant tracking.");
       return null;
     }
 
@@ -456,7 +280,9 @@ export default function PatientSession() {
     return stream;
   }, []);
 
-  // 60 FPS MediaPipe Facial Kinematics Tracking Loop
+  // ─────────────────────────────────────────────────────────────────────────────
+  // 60 FPS MEDIAPIPE FACIAL KINEMATICS & LIP-READING LOOP
+  // ─────────────────────────────────────────────────────────────────────────────
   useEffect(() => {
     let active = true;
     const trackLoop = () => {
@@ -464,13 +290,14 @@ export default function PatientSession() {
         const est = FaceMeshTracker.estimateKinematics(
           videoRef.current,
           hudCanvasRef.current,
-          targetType,
+          activeLevelData.targetViseme,
           vocalEnergy
         );
+
         if (active && est !== null) {
           setKinematics(est);
 
-          // Real-Time 3D Lip-Reading Classifier: Predicts word in Tamil & English from mouth kinematics
+          // Real-Time Lip-Reading Word Classifier
           const lipPred = lipClassifierRef.current.processFrame(
             est,
             activeLevelData,
@@ -497,6 +324,7 @@ export default function PatientSession() {
         setKinematics(null);
         setLipPrediction(null);
       }
+
       if (active) {
         animFrameRef.current = requestAnimationFrame(trackLoop);
       }
@@ -505,14 +333,15 @@ export default function PatientSession() {
     if (mediaStream || displayMode === "sample") {
       animFrameRef.current = requestAnimationFrame(trackLoop);
     } else {
-      // No active source — ensure metrics are cleared
       setKinematics(null);
+      setLipPrediction(null);
     }
+
     return () => {
       active = false;
       if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
     };
-  }, [mediaStream, vocalEnergy, targetType, displayMode, activeLevelData, isLiveListening, fundamentalFreq]);
+  }, [mediaStream, vocalEnergy, displayMode, activeLevelData, isLiveListening, fundamentalFreq]);
 
   // Continuous background Web Audio capture when media stream is active
   useEffect(() => {
@@ -541,7 +370,7 @@ export default function PatientSession() {
           }
         );
       } catch (err) {
-        console.warn("AudioContext continuous setup notice:", err);
+        console.warn("AudioContext setup notice:", err);
       }
     })();
 
@@ -551,7 +380,7 @@ export default function PatientSession() {
     };
   }, [mediaStream]);
 
-  // Resilient speech recognition synchronizer
+  // Synchronize Speech Detector with language & level
   useEffect(() => {
     speechDetectorRef.current.setTargetLevel(activeLevelData);
     lipClassifierRef.current.reset();
@@ -580,88 +409,7 @@ export default function PatientSession() {
     };
   }, [isLiveListening, activeLevelData]);
 
-
-  const stopSpeechRecognition = useCallback(() => {
-    if (recognitionRef.current) {
-      try {
-        recognitionRef.current.stop();
-      } catch {
-        /* ignore speech recognition stop failure */
-      }
-      recognitionRef.current = null;
-    }
-  }, []);
-
-  const startSpeechRecognition = useCallback((_phrase?: string) => {
-    try {
-      const windowWithSpeech = window as unknown as {
-        SpeechRecognition?: new () => WebSpeechRecognition;
-        webkitSpeechRecognition?: new () => WebSpeechRecognition;
-      };
-      const SpeechRec = windowWithSpeech.SpeechRecognition || windowWithSpeech.webkitSpeechRecognition;
-      if (!SpeechRec) return;
-      if (recognitionRef.current) {
-        try {
-          recognitionRef.current.stop();
-        } catch {
-          /* ignore previous stop error */
-        }
-      }
-      const rec = new SpeechRec();
-      rec.continuous = true;
-      rec.interimResults = true;
-      rec.lang = speechLang;
-      rec.onresult = (event: { resultIndex: number; results: Array<Array<{ transcript: string }>> }) => {
-        let transcript = "";
-        for (let i = event.resultIndex; i < event.results.length; ++i) {
-          transcript += event.results[i][0].transcript;
-        }
-        if (transcript.trim()) {
-          setRecognizedSpeech(transcript.trim());
-        }
-      };
-      rec.onerror = () => {
-        /* ignore recognition errors */
-      };
-      rec.start();
-      recognitionRef.current = rec;
-    } catch {
-      /* ignore speech recognition initialization failure */
-    }
-  }, []);
-
-  // 60 FPS 3D Articulatory Avatar & Patient Simulation Loop
-  useEffect(() => {
-    let active = true;
-    let animId: number;
-
-    const avatarLoop = (timeMs: number) => {
-      if (!active) return;
-
-      if (isSimulatingBiofeedback) {
-        const simKinematics = FaceMeshTracker.generateSimulatedKinematics(timeMs, targetType, vocalEnergyRef.current);
-        setKinematics(simKinematics);
-      }
-
-      if (displayMode === "avatar" && avatarCanvasRef.current && kinematicsRef.current) {
-        FaceMeshTracker.draw3DArticulatoryAvatar(
-          avatarCanvasRef.current,
-          kinematicsRef.current,
-          vocalEnergyRef.current,
-          timeMs
-        );
-      }
-
-      animId = requestAnimationFrame(avatarLoop);
-    };
-
-    animId = requestAnimationFrame(avatarLoop);
-    return () => {
-      active = false;
-      cancelAnimationFrame(animId);
-    };
-  }, [displayMode, isSimulatingBiofeedback, targetType, targetPhrase]);
-
+  // Video element source management
   useEffect(() => {
     if (!videoRef.current) return;
     if (displayMode === "sample") {
@@ -683,1783 +431,834 @@ export default function PatientSession() {
     }
   }, [displayMode, mediaStream]);
 
+  // Component Mount & Auto-Prompt Camera
   useEffect(() => {
     mounted.current = true;
+    void enableMedia();
     return () => {
       mounted.current = false;
       releaseMedia();
     };
-  }, [releaseMedia]);
+  }, [enableMedia, releaseMedia]);
 
+  // Session ID check without destroying stream
   useEffect(() => {
     if (session?.id) {
       if (prevSessionIdRef.current && prevSessionIdRef.current !== session.id) {
         releaseMedia();
-        setAttempt(null);
-        setSelectedExerciseId("");
       }
       prevSessionIdRef.current = session.id;
     }
   }, [session?.id, releaseMedia]);
 
-  useEffect(() => {
-    if (connectionState === "error") releaseMedia();
-  }, [connectionState, releaseMedia]);
-
-  const refreshResults = useCallback(async () => {
-    await Promise.all([
-      queryClient.invalidateQueries({ queryKey: ["attempts"] }),
-      queryClient.invalidateQueries({ queryKey: ["session-predictions"] }),
-      queryClient.invalidateQueries({ queryKey: ["session-recordings"] }),
-      queryClient.invalidateQueries({ queryKey: ["signal-quality"] }),
-      queryClient.invalidateQueries({ queryKey: ["session-exercises"] }),
-      queryClient.invalidateQueries({ queryKey: ["patient-sessions"] }),
-    ]);
-  }, [queryClient]);
-
-  const finishAttempt = useCallback(
-    async (overrideAttempt?: Attempt | null) => {
-      const targetAttempt = overrideAttempt ?? currentAttempt ?? attempt;
-      if (!targetAttempt || busyRef.current) return;
-      busyRef.current = true;
-      setStopping(true);
-      setActionError(null);
-      stopAudioCapture();
-      stopSpeechRecognition();
-      setIsSimulatingBiofeedback(false);
-      try {
-        await stopStream().catch(() => {});
-        const endedAt = new Date().toISOString();
-        let saved: Attempt = {
-          ...targetAttempt,
-          ended_at: endedAt,
-          outcome: "completed",
-        };
-
-        if (selectedSessionExercise && !selectedSessionExercise.id.startsWith("offline-") && !targetAttempt.id.startsWith("attempt-")) {
-          try {
-            const patched = await api.patch<Attempt>(`/api/v1/attempts/attempts/${targetAttempt.id}`, {
-              ended_at: endedAt,
-              outcome: "completed",
-            });
-            if (patched) saved = patched;
-            await api.patch(`/api/v1/session-exercises/session-exercises/${selectedSessionExercise.id}`, {
-              status: "completed",
-              ended_at: endedAt,
-            }).catch(() => null);
-          } catch {
-            /* non-blocking offline attempt */
-          }
-        }
-
-        setAttempt(saved);
-        setOfflineAttempts((prev) => [saved, ...prev.filter((a) => a.id !== saved.id)]);
-
-        // Real Multimodal Lip-Reading + Audio Tone + Phonemic Evaluation
-        const evalResult = evaluateMultimodalAttempt(
-          kinematicsRef.current,
-          vocalEnergyRef.current,
-          fundamentalFreq,
-          recognizedSpeech,
-          activeLevelData
-        );
-        setLastEvaluation(evalResult);
-
-        // Record level completion in store
-        const { isNewUnlock } = recordLevelCompletion(
-          currentLevel,
-          evalResult.compositeScore,
-          evalResult.starsAwarded,
-          evalResult.xpEarned
-        );
-        if (isNewUnlock) {
-          setShowLevelCelebration(true);
-        }
-
-        const activeLabel = recognizedSpeech.trim() || targetPhrase;
-        const genPrediction: Prediction = {
-          id: `pred-${Date.now()}`,
-          attempt_id: saved.id,
-          model_id: "multimodal-lip-audio-fusion-v1",
-          model_version: "1.0.0-mediapipe-bilingual",
-          feature_pipeline_version: "mediapipe-468-mfcc-v1",
-          training_dataset_version: "rehab-100-curriculum",
-          prediction_type: "phoneme_classification",
-          predicted_label: activeLabel,
-          confidence: Number((evalResult.compositeScore / 100).toFixed(3)),
-          signal_quality_state: "good",
-          timestamp: endedAt,
-          created_at: endedAt,
-          prediction_json: {
-            rehab_target_verification: {
-              target_match_ratio: evalResult.speechMatchRatio,
-              is_target_mastered: evalResult.isMastered,
-              character_error_rate: Number((1.0 - evalResult.speechMatchRatio).toFixed(3)),
-            },
-            multimodal_evaluation: evalResult,
-            bilabial_seal_efficiency: Number((evalResult.kinematicScore / 100).toFixed(2)),
-            resonance_purity: Number((evalResult.audioToneScore / 100).toFixed(2)),
-            motor_pacing_syllables_per_sec: 3.2,
-          },
-        };
-        setOfflinePrediction(genPrediction);
-        setSimulatedState("result");
-        await refreshResults();
-      } catch (error) {
-        setActionError(error instanceof Error ? error.message : "Unable to stop attempt.");
-      } finally {
-        setStopping(false);
-        busyRef.current = false;
-      }
-    },
-    [currentAttempt, attempt, selectedSessionExercise, stopAudioCapture, stopSpeechRecognition, stopStream, recognizedSpeech, targetPhrase, refreshResults]
-  );
-
-  const startAttempt = async () => {
-    if (busy) return;
-    busyRef.current = true;
-    setStarting(true);
-    setActionError(null);
-    setSimulatedState("listening");
-    let created: Attempt | null = null;
-    try {
-      const freshAttempts = selectedSessionExercise && !selectedSessionExercise.id.startsWith("offline-")
-        ? await listAll<Attempt>(`/api/v1/attempts/attempts?session_exercise_id=${selectedSessionExercise.id}`).catch(() => [])
-        : [];
-      const startedAt = new Date().toISOString();
-      const nextNum = (freshAttempts.reduce((max, item) => Math.max(max, item.attempt_number), 0) || (attempts?.length ?? 0)) + 1;
-
-      created = {
-        id: `attempt-${Date.now()}`,
-        session_exercise_id: selectedSessionExercise.id,
-        attempt_number: nextNum,
-        started_at: startedAt,
-        outcome: "in_progress",
-        created_at: startedAt,
-      };
-
-      if (selectedSessionExercise && !selectedSessionExercise.id.startsWith("offline-")) {
-        const serverCreated = await api.post<Attempt>("/api/v1/attempts/attempts", {
-          session_exercise_id: selectedSessionExercise.id,
-          attempt_number: nextNum,
-          started_at: startedAt,
-        }).catch(() => null);
-        if (serverCreated) created = serverCreated;
-      }
-
-      setAttempt(created);
-
-      // Acquire media based on display mode
-      let stream: MediaStream | null = mediaRef.current;
-      if (displayMode === "camera") {
-        stream = await enableMedia();
-        if (!stream) {
-          // If camera hardware failed or permission was denied, smoothly switch to benchmark test video
-          setDisplayMode("sample");
-          try {
-            stream = await navigator.mediaDevices?.getUserMedia({
-              audio: { echoCancellation: true, noiseSuppression: true, sampleRate: 16000 },
-            });
-            if (stream) {
-              mediaRef.current = stream;
-              setMediaStream(stream);
-            }
-          } catch {
-            /* microphone optional */
-          }
-        }
-      } else {
-        // In test video or avatar mode, try capturing microphone
-        try {
-          stream = await navigator.mediaDevices?.getUserMedia({
-            audio: { echoCancellation: true, noiseSuppression: true, sampleRate: 16000 },
-          });
-          if (stream) {
-            mediaRef.current = stream;
-            setMediaStream(stream);
-          }
-        } catch {
-          /* microphone optional */
-        }
-      }
-
-      if (session && !session.id.startsWith("offline-")) {
-        await api.patch(`/api/v1/sessions/sessions/${session.id}`, {
-          status: "in_progress",
-          started_at: session.started_at ?? startedAt,
-        }).catch(() => null);
-      }
-
-      if (selectedSessionExercise && !selectedSessionExercise.id.startsWith("offline-")) {
-        await api.patch(`/api/v1/session-exercises/session-exercises/${selectedSessionExercise.id}`, {
-          status: "in_progress",
-          started_at: startedAt,
-          ended_at: null,
-        }).catch(() => null);
-      }
-
-      if (session && !session.id.startsWith("offline-") && !created.id.startsWith("attempt-")) {
-        await startStream({
-          type: "stream_start",
-          session_id: session.id,
-          attempt_id: created.id,
-          modality: "AUDIO",
-          sample_rate: 16000,
-          channels: 1,
-          sample_width_bytes: 2,
-          encoding: "pcm16",
-        }).catch(() => null);
-      }
-
-      setRecognizedSpeech("");
-      startSpeechRecognition(targetPhrase);
-
-      const activeAttempt = created;
-      if (stream && stream.getAudioTracks().length > 0) {
-        try {
-          stopCaptureRef.current = await capturePcm(
-            stream,
-            (chunk) => {
-              sendAudio(chunk);
-              const pcm16View = new Int16Array(chunk);
-              let sumSq = 0;
-              for (let i = 0; i < pcm16View.length; i += 4) {
-                const val = pcm16View[i] / 32768.0;
-                sumSq += val * val;
-              }
-              const rms = Math.sqrt(sumSq / (pcm16View.length / 4));
-              setVocalEnergy(rms);
-            },
-            (error) => {
-              console.warn("PCM capture error:", error);
-            }
-          );
-        } catch (pcmErr) {
-          console.warn("AudioContext initialization warning:", pcmErr);
-        }
-      } else {
-        // If microphone is unavailable, simulate vocal energy rhythm so biofeedback responds
-        setIsSimulatingBiofeedback(true);
-      }
-
-      stopTimerRef.current = setTimeout(() => void finishAttempt(activeAttempt), 45000);
-    } catch (error) {
-      closeStream();
-      releaseMedia();
-      setActionError(error instanceof Error ? error.message : "Unable to start attempt.");
-    } finally {
-      setStarting(false);
-      busyRef.current = false;
-    }
-  };
-
-  const finishSession = async () => {
-    if (!session || busy || finishingSession) return;
-    setFinishingSession(true);
-    setActionError(null);
-    try {
-      await api.patch(`/api/v1/sessions/sessions/${session.id}`, {
-        status: "completed",
-        ended_at: new Date().toISOString(),
-      });
-      releaseMedia();
-      await refreshResults();
-    } catch (error) {
-      setActionError(error instanceof Error ? error.message : "Unable to save session.");
-    } finally {
-      setFinishingSession(false);
-    }
-  };
-
-  // Auditory Reference Model Player using Browser SpeechSynthesis (Tamil & English)
-  const playAudioGuide = useCallback((lang: "ta" | "en" = "ta") => {
-    if (typeof window === "undefined" || !window.speechSynthesis) return;
+  // Native Speech Synthesis Dual Audio Guide
+  const playAudioGuide = useCallback((lang: "ta" | "en") => {
+    if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
     try {
       window.speechSynthesis.cancel();
-      setIsPlayingAudioGuide(true);
-      const textToSpeak = lang === "ta" ? (activeLevelData.tamilText || targetPhrase) : (activeLevelData.englishText || targetPhrase);
-      const utter = new SpeechSynthesisUtterance(textToSpeak);
-      utter.lang = lang === "ta" ? "ta-IN" : "en-US";
-      utter.rate = 0.82;
-      utter.pitch = 1.0;
-      utter.onend = () => setIsPlayingAudioGuide(false);
-      utter.onerror = () => setIsPlayingAudioGuide(false);
-      window.speechSynthesis.speak(utter);
+      const textToSpeak = lang === "ta" ? activeLevelData.tamilText : activeLevelData.englishText;
+      const utterance = new SpeechSynthesisUtterance(textToSpeak);
+      utterance.lang = lang === "ta" ? "ta-IN" : "en-US";
+      utterance.rate = 0.85;
+      utterance.pitch = 1.0;
+      utterance.onstart = () => setIsPlayingAudioGuide(true);
+      utterance.onend = () => setIsPlayingAudioGuide(false);
+      utterance.onerror = () => setIsPlayingAudioGuide(false);
+      window.speechSynthesis.speak(utterance);
     } catch {
       setIsPlayingAudioGuide(false);
     }
-  }, [activeLevelData, targetPhrase]);
+  }, [activeLevelData]);
 
-  // Desktop PC Keyboard Shortcuts (Space to Record/Stop, D for 3D Demo, G for Game, Escape to Release)
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // Don't trigger if user is actively typing in an input or textarea
-      if (
-        e.target instanceof HTMLInputElement ||
-        e.target instanceof HTMLTextAreaElement ||
-        (e.target as HTMLElement)?.isContentEditable
-      ) {
-        return;
-      }
+  // Tier info
+  const tierInfo = REHAB_TIER_DESCRIPTIONS[activeLevelData.tier] || {
+    title: "Speech Rehabilitation",
+    badge: `Level ${activeLevelData.level}`,
+    desc: "Clinically structured speech motor recovery",
+  };
 
-      if (e.code === "Space") {
-        e.preventDefault();
-        if (connectionState === "streaming") {
-          void finishAttempt();
-        } else if (!busy && !sessionFinished) {
-          void startAttempt();
-        }
-      } else if (e.key === "d" || e.key === "D") {
-        setDisplayMode((prev) => (prev === "avatar" ? "camera" : "avatar"));
-      } else if (e.key === "g" || e.key === "G") {
-        setIsGameMode((prev) => !prev);
-      } else if (e.key === "Escape") {
-        releaseMedia();
-      }
-    };
+  // Surrounding levels window for horizontal progression timeline
+  const timelineLevels = useMemo(() => {
+    const start = Math.max(1, currentLevel - 3);
+    const end = Math.min(100, currentLevel + 4);
+    const list: number[] = [];
+    for (let i = start; i <= end; i++) list.push(i);
+    return list;
+  }, [currentLevel]);
 
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [connectionState, busy, sessionFinished, finishAttempt, releaseMedia]);
-
-  // Active rehabilitation stage
-  const rawStage = sessionFinished
-    ? "completed"
-    : stopping || connectionState === "stopping"
-    ? "analyzing"
-    : connectionState === "streaming"
-    ? "listening"
-    : displayedAttempt?.ended_at && !starting
-    ? "result"
-    : "ready";
-
-  const stage = simulatedState ?? rawStage;
-
-  // Only a persisted backend comparison or verified practice attempt is a target-match result.
-  const targetVerification = (prediction?.prediction_json as Record<string, unknown>)?.rehab_target_verification as
-    | {
-        target_match_ratio: number;
-        is_target_mastered: boolean;
-        character_error_rate: number;
-      }
-    | undefined;
-
-  // Real-time kinematic and acoustic proxies (dynamic when camera/video/avatar is active, otherwise null)
-  const leftZygomaticus = kinematics ? Math.min(Math.round(42 + kinematics.mouthWidthRatio * 65 + vocalEnergy * 25), 100) : null;
-  const rightZygomaticus = kinematics ? Math.min(Math.round(41 + kinematics.mouthWidthRatio * 63 + vocalEnergy * 24), 100) : null;
-  const bilateralSymmetry = leftZygomaticus !== null && rightZygomaticus !== null ? Math.max(100 - Math.abs(leftZygomaticus - rightZygomaticus) * 2.5, 88.5) : null;
-  const orbicularisOris = kinematics ? Math.min(Math.round(35 + kinematics.lipApertureRatio * 95 + vocalEnergy * 30), 100) : null;
-  const eegReadiness = stage === "listening" || vocalEnergy > 0.05 ? 94.8 : 88.2;
-  
-
-  const masteryPct = targetVerification
-    ? Math.round(targetVerification.target_match_ratio * 100)
-    : prediction?.predicted_label
-    ? 96
-    : kinematics?.withinTarget && vocalEnergy > 0.08
-    ? 95
-    : stage === "result"
-    ? 94
-    : 0;
+  // Circular Ring Math (r = 54, circumference ~ 339.29)
+  const ringRadius = 54;
+  const ringCircumference = 2 * Math.PI * ringRadius;
+  const progressRatio = gameState === "success" ? 1.0 : Math.min(1.0, currentConfidence / SUCCESS_THRESHOLD);
+  const strokeOffset = ringCircumference - progressRatio * ringCircumference;
 
   return (
-    <div className="flex flex-col w-full gap-6 pb-12 font-manrope">
-      {/* 1. Google Stitch Interactive State Simulator Toolbar */}
-      <div className="w-full p-2.5 rounded-full bg-surface-container-lowest shadow-stitch-sm flex flex-wrap items-center justify-between gap-3 px-4 border border-on-surface/[0.05]">
-        <div className="flex items-center gap-2">
-          <Sparkles size={18} className="text-primary animate-pulse" />
-          <span className="font-outfit text-xs font-bold text-on-surface uppercase tracking-wider">
-            Live State Preview:
-          </span>
-        </div>
-
-        <div className="flex items-center gap-1.5 p-1 bg-surface-container-low rounded-full overflow-x-auto">
-          {[
-            { key: "ready", label: "1. Ready" },
-            { key: "listening", label: "2. Listening" },
-            { key: "analyzing", label: "3. AI Analyzing" },
-            { key: "result", label: "4. Result & Feedback" },
-            { key: "next", label: "5. Next Transition" },
-          ].map((item) => (
-            <button
-              key={item.key}
-              type="button"
-              onClick={() => setSimulatedState(item.key)}
-              className={`px-3.5 py-1.5 rounded-full text-xs font-semibold transition-all duration-200 ${
-                stage === item.key
-                  ? "bg-primary text-on-primary shadow-sm font-bold"
-                  : "text-on-surface-variant hover:text-on-surface hover:bg-surface-container"
-              }`}
-            >
-              {item.label}
-            </button>
-          ))}
-        </div>
-
-        <div className="hidden lg:flex items-center gap-3 text-on-surface-variant text-xs font-medium">
-          <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-surface-container-high/60 border border-outline-variant/30 text-[11px]">
-            <span className="font-bold text-primary">Desktop Hotkeys:</span>
-            <span><kbd className="px-1.5 py-0.5 rounded bg-surface-container-lowest text-on-surface font-mono text-[10px] shadow-sm">Space</kbd> Start/Stop</span>
-            <span><kbd className="px-1.5 py-0.5 rounded bg-surface-container-lowest text-on-surface font-mono text-[10px] shadow-sm">D</kbd> 3D Avatar</span>
-            <span><kbd className="px-1.5 py-0.5 rounded bg-surface-container-lowest text-on-surface font-mono text-[10px] shadow-sm">G</kbd> Game</span>
-            <span><kbd className="px-1.5 py-0.5 rounded bg-surface-container-lowest text-on-surface font-mono text-[10px] shadow-sm">Esc</kbd> Reset</span>
-          </div>
-          <div className="flex items-center gap-1.5 text-[11px]">
-            <span className="inline-block w-2 h-2 rounded-full bg-tertiary-container animate-ping" />
-            <span>Multimodal Sync</span>
-          </div>
-        </div>
+    <div className="min-h-screen bg-[#0A0E17] text-slate-100 font-sans selection:bg-emerald-500/30 selection:text-emerald-200">
+      {/* Subtle Ambient Radial Lighting */}
+      <div className="fixed inset-0 pointer-events-none z-0 overflow-hidden">
+        <div className="absolute -top-40 left-1/4 w-[600px] h-[600px] bg-indigo-500/[0.04] rounded-full blur-[120px]" />
+        <div className="absolute top-1/3 -right-40 w-[500px] h-[500px] bg-emerald-500/[0.04] rounded-full blur-[130px]" />
+        <div className="absolute -bottom-40 left-1/3 w-[600px] h-[600px] bg-cyan-500/[0.03] rounded-full blur-[140px]" />
       </div>
 
-      {/* Action / Error Notice */}
-      {(actionError || socketError) && (
-        <div className="rounded-2xl bg-error-container/80 border border-error/30 p-4 text-xs text-on-error-container flex items-center gap-2 backdrop-blur-md">
-          <span>{actionError || socketError}</span>
-        </div>
-      )}
-      {statusMessage && (
-        <div className="rounded-2xl bg-surface-container-low border border-primary/20 p-2.5 text-xs text-primary flex items-center gap-2">
-          <Activity size={13} className="text-primary" />
-          <span>Multimodal Telemetry: {statusMessage}</span>
-        </div>
-      )}
-      {mediaError && (
-        <div className="rounded-2xl bg-amber-50 border border-amber-200 p-4 text-xs text-amber-900 flex items-center gap-2">
-          <span>{mediaError}</span>
-        </div>
-      )}
-
-      {/* 100-Level Speech Rehabilitation Gamification Progress Center */}
-      <section className="w-full bg-surface-container-lowest rounded-3xl p-6 shadow-stitch-card relative overflow-hidden border border-on-surface/[0.05] card-3d">
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6 relative z-10">
-          <div className="flex flex-col gap-2">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="px-3 py-1 rounded-full bg-primary text-white text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 shadow-sm">
-                <Trophy size={14} className="text-amber-300" />
-                <span>Level {currentLevel} of 100</span>
-              </span>
-              <span className="px-3 py-1 rounded-full bg-surface-container-high text-on-surface font-semibold text-xs border border-on-surface/[0.08]">
-                Tier {activeLevelData.tier}: {activeLevelData.tierTitle}
-              </span>
-              <span className="px-2.5 py-1 rounded-full bg-amber-500/10 text-amber-500 font-bold text-xs flex items-center gap-1 border border-amber-500/20">
-                {[1, 2, 3].map((star) => (
-                  <Star
-                    key={star}
-                    size={13}
-                    className={star <= (levelStars[currentLevel] || 0) ? "fill-amber-400 text-amber-400" : "text-on-surface/20"}
-                  />
-                ))}
-                <span className="ml-0.5">{levelStars[currentLevel] || 0}/3 Stars</span>
-              </span>
-            </div>
-
-            <div className="flex items-baseline gap-3 mt-1 flex-wrap">
-              <h1 className="font-outfit text-2xl md:text-3xl text-on-surface font-bold tracking-tight">
-                {activeLevelData.englishText} <span className="text-primary">({activeLevelData.tamilText})</span>
-              </h1>
-              <span className="text-xs text-secondary font-mono bg-secondary/10 px-2 py-0.5 rounded-md font-semibold">
-                Phonetic: {activeLevelData.transliteration}
-              </span>
-            </div>
-            <p className="text-sm text-on-surface-variant font-normal">
-              <strong className="text-on-surface font-semibold">Meaning:</strong> “{activeLevelData.meaning}” · <strong className="text-on-surface font-semibold">Speech Cue:</strong> {activeLevelData.clinicalCue}
-            </p>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-3 shrink-0">
-            {/* Total XP & Streak */}
-            <div className="flex items-center gap-2 px-3.5 py-2.5 rounded-2xl bg-surface-container-low border border-on-surface/[0.04]">
-              <Sparkles size={18} className="text-primary" />
-              <div className="flex flex-col">
-                <span className="text-[10px] text-on-surface-variant font-medium">Rehab XP</span>
-                <span className="font-outfit text-base font-bold text-on-surface leading-tight">{totalXp}</span>
+      <div className="relative z-10 max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-4 flex flex-col gap-5">
+        {/* ─────────────────────────────────────────────────────────────────────────────
+            HEADER: Brand, Gamification Badges, Language & Map Selector
+           ───────────────────────────────────────────────────────────────────────────── */}
+        <header className="flex items-center justify-between flex-wrap gap-4 py-3 px-5 rounded-2xl bg-[#111726]/80 backdrop-blur-xl border border-white/[0.08] shadow-lg">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-indigo-600 via-indigo-500 to-emerald-400 p-[1px] shadow-[0_0_20px_rgba(99,102,241,0.3)]">
+              <div className="w-full h-full bg-[#0E1320] rounded-[11px] flex items-center justify-center">
+                <Brain className="w-5 h-5 text-emerald-400" />
               </div>
-            </div>
-
-            <div className="flex items-center gap-2 px-3.5 py-2.5 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-amber-600">
-              <Flame size={18} className="text-amber-500" />
-              <div className="flex flex-col">
-                <span className="text-[10px] font-medium">Active Streak</span>
-                <span className="font-outfit text-base font-bold leading-tight">{streakDays} Days</span>
-              </div>
-            </div>
-
-            {/* Level Navigation Controls */}
-            <div className="flex items-center gap-1.5">
-              <button
-                type="button"
-                onClick={() => {
-                  prevLevel();
-                  setCustomPhrase("");
-                }}
-                disabled={currentLevel <= 1}
-                className="px-3 py-2.5 rounded-xl bg-surface-container-low hover:bg-surface-container text-on-surface text-xs font-bold disabled:opacity-30 disabled:pointer-events-none flex items-center gap-1 transition border border-on-surface/[0.06]"
-              >
-                <ChevronLeft size={16} /> Prev
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  nextLevel();
-                  setCustomPhrase("");
-                }}
-                disabled={currentLevel >= 100}
-                className="px-3 py-2.5 rounded-xl bg-primary hover:bg-primary/90 text-white text-xs font-bold disabled:opacity-30 disabled:pointer-events-none flex items-center gap-1 transition shadow-sm"
-              >
-                Next <ChevronRight size={16} />
-              </button>
-              <button
-                type="button"
-                onClick={() => setLevelMapOpen(true)}
-                className="px-3.5 py-2.5 rounded-xl bg-secondary text-on-secondary hover:opacity-90 text-xs font-bold flex items-center gap-1.5 transition shadow-sm"
-              >
-                <MapIcon size={16} />
-                <span>100 Levels Map</span>
-              </button>
-            </div>
-          </div>
-        </div>
-
-        {/* Level Progression Progress Bar */}
-        <div className="mt-4 pt-3 border-t border-on-surface/[0.06] flex items-center gap-3">
-          <div className="flex-1 h-2 rounded-full bg-surface-container-high overflow-hidden">
-            <div
-              className="h-full rounded-full bg-gradient-to-r from-primary via-purple-500 to-emerald-400 transition-all duration-300"
-              style={{ width: `${(unlockedLevel / 100) * 100}%` }}
-            />
-          </div>
-          <span className="text-[11px] font-bold text-on-surface-variant shrink-0">
-            {unlockedLevel} / 100 Levels Unlocked ({Math.round((unlockedLevel / 100) * 100)}%)
-          </span>
-        </div>
-      </section>
-
-      {/* 100-Level Interactive Curriculum Map Modal */}
-      {levelMapOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-md animate-fade-in">
-          <div className="bg-surface-container-lowest border border-on-surface/[0.08] rounded-3xl w-full max-w-4xl max-h-[85vh] flex flex-col shadow-2xl overflow-hidden card-3d">
-            <div className="p-5 border-b border-on-surface/[0.06] flex items-center justify-between">
-              <div className="flex items-center gap-2.5">
-                <div className="p-2.5 rounded-2xl bg-primary text-white">
-                  <Trophy size={20} />
-                </div>
-                <div>
-                  <h2 className="font-outfit text-lg font-bold text-on-surface">100-Level Speech Rehabilitation Map</h2>
-                  <p className="text-xs text-on-surface-variant">
-                    Progress through all 5 clinical tiers with bilingual Tamil & English speech targets
-                  </p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setLevelMapOpen(false)}
-                className="p-2 rounded-full hover:bg-surface-container text-on-surface-variant"
-              >
-                <X size={20} />
-              </button>
-            </div>
-
-            {/* Tier Tabs */}
-            <div className="flex items-center gap-2 p-3 bg-surface-container-low overflow-x-auto border-b border-on-surface/[0.04] scrollbar-none">
-              {([1, 2, 3, 4, 5] as const).map((tierNum) => {
-                const info = REHAB_TIER_DESCRIPTIONS[tierNum];
-                const isActive = selectedTierTab === tierNum;
-                return (
-                  <button
-                    key={tierNum}
-                    type="button"
-                    onClick={() => setSelectedTierTab(tierNum)}
-                    className={`px-4 py-2.5 rounded-2xl text-xs font-bold transition flex items-center gap-2 shrink-0 ${
-                      isActive
-                        ? "bg-primary text-white shadow-sm"
-                        : "bg-surface-container-lowest text-on-surface-variant hover:text-on-surface"
-                    }`}
-                  >
-                    <span>Tier {tierNum}: {info.title}</span>
-                    <span className={`text-[10px] px-2 py-0.5 rounded-full ${isActive ? "bg-white/20 text-white" : "bg-on-surface/[0.06]"}`}>
-                      {info.badge}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-
-            {/* Grid of 20 Levels for Selected Tier */}
-            <div className="p-5 overflow-y-auto grid grid-cols-2 sm:grid-cols-4 md:grid-cols-5 gap-3">
-              {getLevelsByTier(selectedTierTab).map((lvl) => {
-                const isUnlocked = lvl.level <= unlockedLevel;
-                const isCurrent = lvl.level === currentLevel;
-                const stars = levelStars[lvl.level] || 0;
-                const score = levelScores[lvl.level] || 0;
-
-                return (
-                  <button
-                    key={lvl.level}
-                    type="button"
-                    disabled={!isUnlocked}
-                    onClick={() => {
-                      setCurrentLevel(lvl.level);
-                      setLevelMapOpen(false);
-                      setCustomPhrase("");
-                      setTargetType(lvl.targetViseme);
-                    }}
-                    className={`p-3 rounded-2xl border text-left flex flex-col justify-between transition-all duration-200 h-28 relative ${
-                      isCurrent
-                        ? "bg-primary/10 border-primary shadow-md ring-2 ring-primary/40"
-                        : isUnlocked
-                        ? "bg-surface-container-low hover:bg-surface-container border-on-surface/[0.06] hover:scale-[1.02]"
-                        : "bg-surface-container-lowest/50 border-on-surface/[0.03] opacity-40 cursor-not-allowed"
-                    }`}
-                  >
-                    <div className="flex items-center justify-between w-full">
-                      <span className="text-[11px] font-bold text-on-surface-variant">Lvl {lvl.level}</span>
-                      {isUnlocked ? (
-                        <div className="flex items-center gap-0.5">
-                          {[1, 2, 3].map((s) => (
-                            <Star
-                              key={s}
-                              size={10}
-                              className={s <= stars ? "fill-amber-400 text-amber-400" : "text-on-surface/20"}
-                            />
-                          ))}
-                        </div>
-                      ) : (
-                        <Lock size={12} className="text-on-surface-variant" />
-                      )}
-                    </div>
-
-                    <div className="flex flex-col">
-                      <span className="font-outfit font-bold text-on-surface text-sm truncate">{lvl.englishText}</span>
-                      <span className="text-xs font-semibold text-primary truncate">{lvl.tamilText}</span>
-                    </div>
-
-                    <div className="flex items-center justify-between text-[10px] text-on-surface-variant">
-                      <span className="truncate capitalize">{lvl.targetViseme}</span>
-                      {score > 0 && <span className="font-bold text-emerald-500">{score}%</span>}
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Level Mastered Celebration Toast Modal */}
-      {showLevelCelebration && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
-          <div className="bg-surface-container-lowest border border-primary/30 rounded-3xl p-6 max-w-sm w-full text-center flex flex-col items-center gap-4 shadow-2xl card-3d">
-            <div className="w-16 h-16 rounded-full bg-gradient-to-tr from-primary to-emerald-400 flex items-center justify-center text-white shadow-lg animate-bounce">
-              <Trophy size={32} />
             </div>
             <div>
-              <span className="text-xs font-bold text-primary uppercase tracking-wider">Level Cleared!</span>
-              <h3 className="font-outfit text-xl font-bold text-on-surface mt-1">Level {currentLevel} Mastered!</h3>
-              <p className="text-xs text-on-surface-variant mt-1">
-                {lastEvaluation?.primaryFeedback ?? "Splendid multimodal coordination across lip reading, tone, and speech!"}
+              <div className="flex items-center gap-2">
+                <h1 className="text-base font-extrabold tracking-tight text-white">
+                  NEURO<span className="text-emerald-400">SPEECH</span>
+                </h1>
+                <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+                  Workstation Pro
+                </span>
+              </div>
+              <p className="text-xs text-slate-400">
+                {tierInfo.title} · <span className="text-slate-300 font-semibold">{tierInfo.badge}</span>
               </p>
             </div>
-
-            <div className="flex items-center gap-1">
-              {[1, 2, 3].map((s) => (
-                <Star
-                  key={s}
-                  size={24}
-                  className={s <= (lastEvaluation?.starsAwarded || 1) ? "fill-amber-400 text-amber-400 animate-pulse" : "text-on-surface/20"}
-                />
-              ))}
-            </div>
-
-            <div className="flex items-center gap-2 w-full pt-2">
-              <button
-                type="button"
-                onClick={() => setShowLevelCelebration(false)}
-                className="flex-1 py-2.5 rounded-xl bg-surface-container-high text-on-surface text-xs font-bold"
-              >
-                Review Score
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setShowLevelCelebration(false);
-                  nextLevel();
-                  setCustomPhrase("");
-                }}
-                className="flex-1 py-2.5 rounded-xl bg-primary text-white text-xs font-bold flex items-center justify-center gap-1 shadow-sm"
-              >
-                Next Level <ChevronRight size={15} />
-              </button>
-            </div>
           </div>
-        </div>
-      )}
 
-{/* 3. Main 12-Column Responsive Workspace (Matching Stitch Live Therapy Studio 1) */}
-      <div className="session-workspace-grid grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-        {/* LEFT STAGE: Multimodal Perception & Biofeedback Mirror (5 cols) */}
-        <div className="lg:col-span-5 flex flex-col gap-6">
-          {/* Camera / 3D Avatar Mirror Container */}
-          <div className="relative bg-surface-container-lowest rounded-3xl p-5 shadow-stitch-card flex flex-col overflow-hidden border border-on-surface/[0.05] card-3d">
-            {/* Status bar atop camera with View Switcher & Simulation Toggle */}
-            <div className="flex flex-wrap items-center justify-between pb-3 px-1 gap-2">
-              <div className="flex items-center gap-2">
-                <span className={`w-2.5 h-2.5 rounded-full ${displayMode === 'avatar' || isSimulatingBiofeedback ? 'bg-secondary animate-pulse' : 'bg-error animate-pulse'}`} />
-                <span className="text-xs font-bold text-on-surface">Camera motion preview</span>
-              </div>
+          {/* Gamification Counters & Controls */}
+          <div className="flex items-center gap-2.5 flex-wrap">
+            {/* Streak Pill */}
+            <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white/[0.04] border border-white/[0.06] text-xs font-bold text-amber-300 shadow-sm">
+              <Sparkles size={14} className="text-amber-400" />
+              <span>{streakDays} Day Streak</span>
+            </div>
 
-              {/* View Switcher Pill & 3D Demo Button */}
-              <div className="flex items-center gap-1.5 flex-wrap">
-                <div className="flex items-center bg-surface-container-low p-0.5 rounded-full border border-on-surface/[0.06]">
+            {/* Total XP Pill */}
+            <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white/[0.04] border border-white/[0.06] text-xs font-bold text-emerald-400 shadow-sm">
+              <Zap size={14} className="text-emerald-400" />
+              <span>{totalXp} XP</span>
+            </div>
+
+            {/* Language Selector */}
+            <div className="flex items-center bg-[#0C101A] p-1 rounded-full border border-white/[0.08] text-xs">
+              <button
+                type="button"
+                onClick={() => setSpeechLang("ta-IN")}
+                className={`px-3 py-1 rounded-full font-bold transition-all ${
+                  speechLang === "ta-IN"
+                    ? "bg-emerald-500 text-slate-950 shadow-[0_0_12px_rgba(16,185,129,0.35)]"
+                    : "text-slate-400 hover:text-white"
+                }`}
+              >
+                🇮🇳 தமிழ்
+              </button>
+              <button
+                type="button"
+                onClick={() => setSpeechLang("en-US")}
+                className={`px-3 py-1 rounded-full font-bold transition-all ${
+                  speechLang === "en-US"
+                    ? "bg-indigo-500 text-white shadow-[0_0_12px_rgba(99,102,241,0.35)]"
+                    : "text-slate-400 hover:text-white"
+                }`}
+              >
+                🇺🇸 English
+              </button>
+            </div>
+
+            {/* 100-Level Curriculum Map Modal Toggle */}
+            <button
+              type="button"
+              onClick={() => setLevelMapOpen(true)}
+              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-gradient-to-r from-indigo-500/20 to-emerald-500/20 hover:from-indigo-500/30 hover:to-emerald-500/30 border border-indigo-500/30 text-xs font-bold text-slate-200 transition-all shadow-sm active:scale-95"
+            >
+              <MapIcon size={14} className="text-indigo-400" />
+              <span>100 Levels Map</span>
+            </button>
+          </div>
+        </header>
+
+        {/* ─────────────────────────────────────────────────────────────────────────────
+            MAIN GRID: Top Left (Mirror) + Bottom Left (Biosignals) | Right (Game Hub)
+           ───────────────────────────────────────────────────────────────────────────── */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+          {/* ─── LEFT COLUMN (col-span-7) ─── */}
+          <div className="lg:col-span-7 flex flex-col gap-5">
+            {/* 1. TOP LEFT: THE MIRROR */}
+            <div className="relative rounded-2xl overflow-hidden bg-[#111726]/80 backdrop-blur-xl border border-emerald-500/30 shadow-[0_0_35px_rgba(16,185,129,0.12)] aspect-video sm:aspect-[16/10] flex items-center justify-center group">
+              {/* Live Webcam / Sample Video */}
+              <video
+                ref={videoRef}
+                className="w-full h-full object-cover transform -scale-x-100"
+                playsInline
+                muted
+                autoPlay
+              />
+
+              {/* 3D MediaPipe Facial Landmarks HUD Canvas */}
+              <canvas
+                ref={hudCanvasRef}
+                className="absolute inset-0 w-full h-full object-cover transform -scale-x-100 pointer-events-none"
+              />
+
+              {/* Top Video Status & Source Switcher Bar */}
+              <div className="absolute top-3 inset-x-3 flex items-center justify-between pointer-events-auto">
+                <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-[#0B0F17]/80 backdrop-blur-md border border-white/[0.08] text-[11px] font-bold text-slate-200 shadow-md">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+                  <span>MediaPipe 3D Mesh Active</span>
+                </div>
+
+                {/* Source Switcher Pill */}
+                <div className="flex items-center bg-[#0B0F17]/85 backdrop-blur-md p-0.5 rounded-full border border-white/[0.08] text-[11px] shadow-md">
                   <button
                     type="button"
                     onClick={() => {
                       setDisplayMode("camera");
                       void enableMedia();
-                      triggerHaptic();
                     }}
-                    className={`px-2.5 py-1 rounded-full text-[11px] font-bold transition-all btn-3d ${
+                    className={`px-3 py-1 rounded-full font-bold transition-all ${
                       displayMode === "camera"
-                        ? "bg-primary text-white shadow-sm"
-                        : "text-on-surface-variant hover:text-on-surface"
+                        ? "bg-emerald-500 text-slate-950 shadow-sm"
+                        : "text-slate-400 hover:text-white"
                     }`}
                   >
                     <span className="flex items-center gap-1">
-                      <Camera size={11} className="icon-3d" /> Live Cam
+                      <Camera size={12} /> Live Cam
                     </span>
                   </button>
                   <button
                     type="button"
-                    onClick={() => {
-                      setDisplayMode("sample");
-                      triggerHaptic();
-                    }}
-                    className={`px-2.5 py-1 rounded-full text-[11px] font-bold transition-all btn-3d ${
+                    onClick={() => setDisplayMode("sample")}
+                    className={`px-3 py-1 rounded-full font-bold transition-all ${
                       displayMode === "sample"
-                        ? "bg-cyan-600 text-white shadow-sm"
-                        : "text-on-surface-variant hover:text-on-surface"
+                        ? "bg-cyan-500 text-slate-950 shadow-sm"
+                        : "text-slate-400 hover:text-white"
                     }`}
                   >
                     <span className="flex items-center gap-1">
-                      <Play size={11} className="icon-3d" /> Test Video
+                      <Play size={12} /> Benchmark Video
                     </span>
                   </button>
+                </div>
+              </div>
+
+              {/* Bottom Video Landmark Telemetry Pill */}
+              <div className="absolute bottom-3 inset-x-3 flex items-center justify-between pointer-events-none">
+                <div className="px-3 py-1 rounded-full bg-[#0B0F17]/80 backdrop-blur-md border border-white/[0.08] text-[11px] font-mono text-slate-300">
+                  LAR: <strong className="text-emerald-400">{kinematics?.lipApertureRatio.toFixed(2) ?? "0.00"}</strong> · MWR: <strong className="text-cyan-400">{kinematics?.mouthWidthRatio.toFixed(2) ?? "0.00"}</strong> · Jaw: <strong className="text-indigo-300">{kinematics?.jawDisplacementMm.toFixed(1) ?? "0.0"}mm</strong>
+                </div>
+
+                <div className="px-3 py-1 rounded-full bg-[#0B0F17]/80 backdrop-blur-md border border-white/[0.08] text-[11px] font-bold text-slate-200">
+                  {kinematics?.postureStatus ?? "Neutral Stance"}
+                </div>
+              </div>
+
+              {/* Optional Camera Hardware Error Warning */}
+              {mediaError && displayMode === "camera" && (
+                <div className="absolute inset-0 bg-[#0B0F17]/90 backdrop-blur-lg flex flex-col items-center justify-center p-6 text-center gap-3">
+                  <Camera className="w-10 h-10 text-amber-400" />
+                  <p className="text-xs text-slate-300 max-w-sm">{mediaError}</p>
                   <button
                     type="button"
-                    onClick={() => {
-                      setDisplayMode("avatar");
-                      triggerHaptic();
-                    }}
-                    className={`px-2.5 py-1 rounded-full text-[11px] font-bold transition-all btn-3d ${
-                      displayMode === "avatar"
-                        ? "bg-secondary text-white shadow-sm"
-                        : "text-on-surface-variant hover:text-on-surface"
-                    }`}
+                    onClick={() => setDisplayMode("sample")}
+                    className="px-4 py-2 rounded-full bg-cyan-500 text-slate-950 font-bold text-xs shadow-lg hover:bg-cyan-400"
                   >
-                    <span className="flex items-center gap-1">
-                      <Brain size={11} className="icon-3d" /> 3D Avatar
-                    </span>
+                    Switch to Benchmark Video
                   </button>
                 </div>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsSimulatingBiofeedback((prev) => !prev);
-                    triggerHaptic();
-                  }}
-                  className={`px-2.5 py-1 rounded-full text-[11px] font-bold transition-all btn-3d border ${
-                    isSimulatingBiofeedback
-                      ? "bg-tertiary-fixed text-on-tertiary-fixed border-tertiary-container animate-pulse"
-                      : "bg-surface-container-low text-on-surface-variant hover:text-on-surface border-on-surface/[0.08]"
-                  }`}
-                  title="Toggle a synthetic preview; it is not recorded or used as a patient result"
-                >
-                  <span className="flex items-center gap-1">
-                    <Sparkles size={11} className="icon-3d text-secondary" />
-                    {isSimulatingBiofeedback ? "Synthetic preview ON" : "3D preview"}
-                  </span>
-                </button>
-              </div>
-            </div>
-
-            {/* Video / 3D Canvas Viewport */}
-            <div className="relative w-full aspect-[4/3] rounded-2xl overflow-hidden shadow-inner bg-slate-950">
-              {displayMode === "camera" || displayMode === "sample" ? (
-                <>
-                  <video
-                    ref={videoRef}
-                    muted
-                    playsInline
-                    aria-label="Patient articulatory preview"
-                    className="w-full h-full object-cover transform scale-x-[-1]"
-                  />
-                  <canvas
-                    ref={hudCanvasRef}
-                    className="absolute inset-0 h-full w-full pointer-events-none transform scale-x-[-1]"
-                  />
-
-                  {/* Stylized 68-Point Bilabial Lip Vector HUD Overlay */}
-                  <svg className="absolute inset-0 w-full h-full pointer-events-none transition-opacity duration-300" fill="none" viewBox="0 0 400 300">
-                    <defs>
-                      <linearGradient id="stitchGlow" x1="0%" x2="100%" y1="0%" y2="100%">
-                        <stop offset="0%" stopColor="#7C3AED" stopOpacity="0.85" />
-                        <stop offset="100%" stopColor="#2170E4" stopOpacity="0.85" />
-                      </linearGradient>
-                    </defs>
-                    <g className="transition-transform duration-300" style={{ transformOrigin: "200px 186px", transform: `scale(${1 + vocalEnergy * 0.4})` }}>
-                      <path
-                        d="M 162 178 C 175 168 188 170 200 174 C 212 170 225 168 238 178 C 228 198 214 204 200 204 C 186 204 172 198 162 178 Z"
-                        fill="#7C3AED"
-                        fillOpacity="0.08"
-                        stroke="url(#stitchGlow)"
-                        strokeWidth="2"
-                      />
-                      <path
-                        d="M 172 178 C 185 174 195 176 200 177 C 205 176 215 174 228 178 C 218 190 210 193 200 193 C 190 193 182 190 172 178 Z"
-                        fill="none"
-                        stroke="#6ffbbe"
-                        strokeWidth="1.5"
-                      />
-                      <circle cx="162" cy="178" fill="#eaddff" r="3.5" stroke="#7C3AED" strokeWidth="1" />
-                      <circle cx="238" cy="178" fill="#eaddff" r="3.5" stroke="#7C3AED" strokeWidth="1" />
-                      <circle cx="200" cy="174" fill="#76ffc2" r="3.5" stroke="#007650" strokeWidth="1" />
-                      <circle cx="200" cy="204" fill="#76ffc2" r="3.5" stroke="#007650" strokeWidth="1" />
-                    </g>
-                  </svg>
-
-                  {/* Camera Activation Fallback Prompt (shown ONLY in camera mode when stream is inactive) */}
-                  {displayMode === "camera" && !mediaStream && (
-                    <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-surface-container-high/90 p-6 text-center backdrop-blur-sm z-20">
-                      <div className="w-14 h-14 rounded-full bg-primary-fixed text-primary flex items-center justify-center shadow-md animate-bounce">
-                        <Camera size={26} />
-                      </div>
-                      <div className="font-outfit text-base font-bold text-on-surface">Bio-Optical Camera Sensor</div>
-
-                      {mediaError ? (
-                        <div className="bg-error-container/90 text-on-error-container text-[11px] p-2.5 rounded-xl border border-error/20 max-w-xs text-left">
-                          <p className="font-semibold mb-0.5">⚠️ Camera Permission Note:</p>
-                          <p>{mediaError}</p>
-                        </div>
-                      ) : (
-                        <p className="text-xs text-on-surface-variant max-w-xs">
-                          Enable the camera for a live visual motion preview. No EEG or EMG is connected in this software-only build.
-                        </p>
-                      )}
-
-                      <div className="flex flex-col sm:flex-row items-center justify-center gap-2 mt-1 w-full max-w-xs">
-                        <button
-                          type="button"
-                          onClick={() => { void enableMedia(); triggerHaptic(); }}
-                          className="stitch-btn-primary btn-3d text-xs w-full sm:w-auto"
-                        >
-                          <Camera size={14} className="icon-3d" />
-                          <span>Launch Camera</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => { setDisplayMode("sample"); triggerHaptic(); }}
-                          className="px-3.5 py-2 rounded-full bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-bold shadow-sm transition-all btn-3d w-full sm:w-auto flex items-center justify-center gap-1.5"
-                        >
-                          <Play size={13} className="icon-3d" />
-                          <span>🎬 Play Test Video</span>
-                        </button>
-                      </div>
-
-                      <button
-                        type="button"
-                        onClick={() => { setDisplayMode("avatar"); triggerHaptic(); }}
-                        className="text-xs text-on-surface-variant hover:text-secondary underline font-medium mt-0.5"
-                      >
-                        Or switch to 3D Articulatory Avatar →
-                      </button>
-                    </div>
-                  )}
-                </>
-              ) : (
-                /* 3D Articulatory Anatomical Avatar Canvas */
-                <canvas
-                  ref={avatarCanvasRef}
-                  width={480}
-                  height={360}
-                  className="w-full h-full object-cover"
-                />
               )}
-
-              {/* Viewport Floating Telemetry Badges */}
-              <div className="absolute top-3 left-3 px-2.5 py-1 rounded-full bg-slate-900/80 backdrop-blur-md shadow-sm flex items-center gap-1.5 text-white border border-white/10">
-                <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping" />
-                <span className="text-[10px] font-bold tracking-tight">
-                  {kinematics
-                    ? `Camera proxy · Jaw ${kinematics.jawDisplacementMm.toFixed(1)}mm`
-                    : "Camera inactive — no live motion data"}
-                </span>
-              </div>
-
-              <div className="absolute top-3 right-3 px-2.5 py-1 rounded-full bg-slate-900/80 backdrop-blur-md shadow-sm flex items-center gap-1.5 text-white border border-white/10">
-                <span className={`w-2 h-2 rounded-full ${kinematics?.withinTarget ? "bg-emerald-400" : "bg-amber-400"}`} />
-                <span className="text-[10px] font-bold tracking-tight">
-                  {kinematics ? (kinematics.withinTarget ? "★ Target Aligned" : "Adjusting") : "—"}
-                </span>
-              </div>
-
-              {/* Bottom Status Ticker */}
-              <div className="absolute bottom-3 inset-x-3 p-2 rounded-xl bg-slate-950/85 backdrop-blur-md flex items-center justify-between border border-white/10 shadow-sm text-[11px] text-white">
-                <div className="flex items-center gap-2">
-                  <Waves size={14} className="text-cyan-400 animate-pulse" />
-                  <span className="font-semibold">{kinematics?.postureStatus ?? "Awaiting camera"}</span>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <span className="text-[10px] text-emerald-400 font-bold bg-emerald-950/60 border border-emerald-500/30 px-2 py-0.5 rounded-full">
-                    {qualityQuery.data?.artifact_indicators?.rms ? `Audio level ${String(qualityQuery.data.artifact_indicators.rms)}` : "Audio quality pending"}
-                  </span>
-                </div>
-              </div>
             </div>
 
-            {/* Real-time Dynamic Biomechanical & EMG Gauges */}
-            <div className="mt-4 grid grid-cols-2 sm:grid-cols-3 gap-2.5">
-              {/* Jaw Displacement Gauge */}
-              <div className="p-3 rounded-2xl bg-surface-container-low border border-on-surface/[0.04] flex flex-col gap-1.5 card-3d">
-                <div className="flex items-center justify-between">
-                  <span className="text-[11px] font-bold text-on-surface-variant flex items-center gap-1">
-                    <Activity size={12} className="text-secondary" /> Jaw Excursion
-                  </span>
-                  <span className="text-xs font-bold text-secondary">
-                    {kinematics ? `${kinematics.jawDisplacementMm.toFixed(1)} mm` : "— mm"}
-                  </span>
-                </div>
-                <div className="h-2 w-full rounded-full bg-surface-container-high overflow-hidden">
-                  <div
-                    className="h-full rounded-full bg-gradient-to-r from-secondary to-primary transition-all duration-100"
-                    style={{ width: kinematics ? `${Math.min((kinematics.jawDisplacementMm / 25) * 100, 100)}%` : "0%" }}
-                  />
-                </div>
-                <span className="text-[10px] text-on-surface-variant font-medium">
-                  {kinematics
-                    ? (kinematics.jawDisplacementMm > 7 ? "✓ Normal vertical drop" : "Resting jaw position")
-                    : "Enable camera to track jaw"}
-                </span>
-              </div>
-
-              {/* Lip Aperture Gauge */}
-              <div className="p-3 rounded-2xl bg-surface-container-low border border-on-surface/[0.04] flex flex-col gap-1.5 card-3d">
-                <div className="flex items-center justify-between">
-                  <span className="text-[11px] font-bold text-on-surface-variant flex items-center gap-1">
-                    <Waves size={12} className="text-tertiary-container" /> Lip Aperture
-                  </span>
-                  <span className="text-xs font-bold text-tertiary-container">
-                    {kinematics ? `${(kinematics.lipApertureRatio * 100).toFixed(0)}%` : "—%"}
-                  </span>
-                </div>
-                <div className="h-2 w-full rounded-full bg-surface-container-high overflow-hidden">
-                  <div
-                    className="h-full rounded-full bg-gradient-to-r from-tertiary-container to-emerald-500 transition-all duration-100"
-                    style={{ width: kinematics ? `${Math.min(kinematics.lipApertureRatio * 150, 100)}%` : "0%" }}
-                  />
-                </div>
-                <span className="text-[10px] text-on-surface-variant font-medium">
-                  {kinematics
-                    ? (kinematics.lipApertureRatio < 0.25 ? "✓ Bilabial Contact Sealed" : "Oral Aperture Open")
-                    : "Enable camera to track lips"}
-                </span>
-              </div>
-
-              {/* Bilateral sEMG Symmetry */}
-              <div className="col-span-2 sm:col-span-1 p-3 rounded-2xl bg-surface-container-low border border-on-surface/[0.04] flex flex-col gap-1.5 card-3d">
-                <div className="flex items-center justify-between">
-                  <span className="text-[11px] font-bold text-on-surface-variant flex items-center gap-1">
-                    <Brain size={12} className="text-primary" /> sEMG Symmetry
-                  </span>
-                  <span className="text-xs font-bold text-primary">
-                    {bilateralSymmetry !== null ? `${bilateralSymmetry.toFixed(1)}%` : "—%"}
-                  </span>
-                </div>
-                <div className="h-2 w-full rounded-full bg-surface-container-high overflow-hidden">
-                  <div
-                    className="h-full rounded-full bg-gradient-to-r from-primary to-primary-container transition-all duration-100"
-                    style={{ width: bilateralSymmetry !== null ? `${bilateralSymmetry}%` : "0%" }}
-                  />
-                </div>
-                <span className="text-[10px] text-on-surface-variant font-medium">
-                  {leftZygomaticus !== null && rightZygomaticus !== null
-                    ? `L: ${leftZygomaticus}µV · R: ${rightZygomaticus}µV`
-                    : "Enable camera for sEMG data"}
-                </span>
-              </div>
-            </div>
-
-            {/* Real-Time Bilingual Speech AI & Multimodal Lip-Reading Box */}
-            <div className="mt-3.5 p-4 rounded-2xl bg-gradient-to-br from-surface-container-low to-primary-fixed/20 border border-primary/20 flex flex-col gap-3 card-3d">
-              <div className="flex items-center justify-between flex-wrap gap-2">
-                <div className="flex items-center gap-2">
-                  <div className="p-1.5 rounded-lg bg-primary text-white">
-                    <Sparkles size={14} className="animate-spin icon-3d" />
-                  </div>
-                  <span className="font-outfit text-xs font-bold text-on-surface uppercase tracking-wide">
-                    Bilingual Speech & Multimodal Evaluator
-                  </span>
-                </div>
-
-                {/* Speech Recognition Language Selector */}
-                <div className="flex items-center gap-1.5">
-                  <div className="flex items-center bg-surface-container-lowest p-0.5 rounded-full border border-on-surface/[0.08] text-[11px]">
-                    <button
-                      type="button"
-                      onClick={() => setSpeechLang("ta-IN")}
-                      className={`px-2.5 py-0.5 rounded-full font-bold transition ${
-                        speechLang === "ta-IN" ? "bg-primary text-white" : "text-on-surface-variant hover:text-on-surface"
-                      }`}
-                    >
-                      🇮🇳 தமிழ் (Tamil)
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setSpeechLang("en-US")}
-                      className={`px-2.5 py-0.5 rounded-full font-bold transition ${
-                        speechLang === "en-US" ? "bg-primary text-white" : "text-on-surface-variant hover:text-on-surface"
-                      }`}
-                    >
-                      🇺🇸 English
-                    </button>
-                  </div>
-                  <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-primary-fixed text-primary">
-                    {lastEvaluation ? `${lastEvaluation.compositeScore}% Match` : masteryPct > 0 ? `${masteryPct}% Target Match` : "95.4% Accuracy"}
-                  </span>
-                </div>
-              </div>
-
-              {/* Live Multimodal Match Meter */}
-              <div className="p-3 rounded-xl bg-surface-container-lowest border border-primary/20 flex flex-col gap-1.5 shadow-sm">
-                <div className="flex items-center justify-between text-xs font-bold">
-                  <span className="flex items-center gap-1.5 text-on-surface">
-                    <Sparkles size={14} className="text-primary animate-spin" />
-                    Live Multimodal Progress (Lip Movement + Speech AI)
-                  </span>
-                  <span className={`text-xs font-extrabold ${liveProgress >= 60 ? "text-emerald-600" : "text-primary"}`}>
-                    {liveProgress}% / 100% {liveProgress >= 60 ? "🎉 Target Cleared!" : ""}
-                  </span>
-                </div>
-                <div className="w-full h-2 rounded-full bg-surface-container-high overflow-hidden">
-                  <div
-                    className={`h-full rounded-full transition-all duration-300 ${
-                      liveProgress >= 60
-                        ? "bg-gradient-to-r from-emerald-500 to-teal-400"
-                        : "bg-gradient-to-r from-primary via-secondary to-tertiary-container"
-                    }`}
-                    style={{ width: `${Math.max(6, liveProgress)}%` }}
-                  />
-                </div>
-              </div>
-
-              {/* 3-Card Bilingual Speech & Lip-Reading Diagnostic Grid */}
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5 text-xs">
-                {/* 1. Target Phrase (Tamil & English) */}
-                <div className="p-3 rounded-xl bg-surface-container-lowest border border-on-surface/[0.05] flex flex-col justify-between gap-1.5 shadow-sm">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider">Target Prompt</span>
-                    <div className="flex items-center gap-1">
-                      <button
-                        type="button"
-                        onClick={() => playAudioGuide("ta")}
-                        disabled={isPlayingAudioGuide}
-                        className="px-2 py-0.5 rounded-md bg-primary/10 hover:bg-primary/20 text-primary font-bold text-[10px] flex items-center gap-1 transition"
-                        title="Listen to Tamil pronunciation"
-                      >
-                        <Volume2 size={11} /> <span>தமிழ்</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => playAudioGuide("en")}
-                        disabled={isPlayingAudioGuide}
-                        className="px-2 py-0.5 rounded-md bg-secondary/10 hover:bg-secondary/20 text-secondary font-bold text-[10px] flex items-center gap-1 transition"
-                        title="Listen to English pronunciation"
-                      >
-                        <Volume2 size={11} /> <span>EN</span>
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="flex items-baseline gap-2 mt-0.5">
-                    <span className="font-bold text-primary text-xl">{targetTamil}</span>
-                    <span className="font-bold text-on-surface text-sm">/ {targetPhrase}</span>
-                  </div>
-                  <span className="text-[10px] text-secondary font-mono truncate">Phonetic: {activeLevelData.transliteration}</span>
-                </div>
-
-                {/* 2. Visual Lip-Reading Detection Box */}
-                <div className="p-3 rounded-xl bg-surface-container-lowest border border-primary/20 flex flex-col justify-between gap-1.5 shadow-sm">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[10px] font-bold text-primary uppercase tracking-wider flex items-center gap-1">
-                      👄 Lip Tracker Detection
-                    </span>
-                    <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full ${
-                      lipPrediction && lipPrediction.confidence >= 60 ? "bg-emerald-500/10 text-emerald-600" : "bg-primary/10 text-primary"
-                    }`}>
-                      {lipPrediction?.isArticulating ? `${lipPrediction.confidence}% Match` : "Tracking Lips…"}
-                    </span>
-                  </div>
-                  <div className="flex items-baseline gap-2 mt-0.5">
-                    <span className="font-bold text-primary text-xl">{lipPrediction?.wordTamil || targetTamil}</span>
-                    <span className="font-bold text-on-surface text-sm">/ {lipPrediction?.wordEnglish || targetPhrase}</span>
-                  </div>
-                  <div className="flex items-center justify-between text-[10px] text-on-surface-variant">
-                    <span className="truncate max-w-[140px]">{lipPrediction?.visemeLabel || targetViseme}</span>
-                    <span className={lipPrediction?.isArticulating ? "font-bold text-emerald-600" : "text-on-surface-variant"}>
-                      {lipPrediction?.isArticulating ? "👄 Articulating" : "Ready"}
-                    </span>
-                  </div>
-                </div>
-
-                {/* 3. Microphone Speech AI Detection Box */}
-                <div className="p-3 rounded-xl bg-surface-container-lowest border border-secondary/20 flex flex-col justify-between gap-1.5 shadow-sm">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[10px] font-bold text-secondary uppercase tracking-wider flex items-center gap-1">
-                      🎤 Mic Speech Detection
-                    </span>
-                    <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full ${
-                      speechPrediction && speechPrediction.confidence >= 60 ? "bg-emerald-500/10 text-emerald-600" : "bg-secondary/10 text-secondary"
-                    }`}>
-                      {speechPrediction && speechPrediction.confidence > 0 ? `${speechPrediction.confidence}% Match` : isLiveListening ? "Listening…" : "Paused"}
-                    </span>
-                  </div>
-                  <div className="flex items-baseline gap-2 mt-0.5">
-                    <span className="font-bold text-secondary text-xl">{speechPrediction?.predictedTamil || targetTamil}</span>
-                    <span className="font-bold text-on-surface text-sm">/ {speechPrediction?.predictedEnglish || targetPhrase}</span>
-                  </div>
-                  <div className="flex items-center justify-between text-[10px] text-on-surface-variant">
-                    <span className="truncate max-w-[140px]">
-                      {recognizedSpeech ? `“${recognizedSpeech}”` : speechPrediction?.rawTranscript ? `“${speechPrediction.rawTranscript}”` : "Speak into mic…"}
-                    </span>
-                    <span className={vocalEnergy > 0.04 ? "font-bold text-secondary" : "text-on-surface-variant"}>
-                      {vocalEnergy > 0.04 ? "🔊 Voice Active" : "Quiet"}
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Interactive Quick Articulation & Sound Testing Action Bar */}
-              <div className="flex items-center gap-2 flex-wrap pt-0.5">
-                <button
-                  type="button"
-                  onClick={() => {
-                    const sim = speechDetectorRef.current.simulateSpokenWord(activeLevelData.tamilText, activeLevelData.englishText);
-                    setSpeechPrediction(sim);
-                    setRecognizedSpeech(`${activeLevelData.tamilText} (${activeLevelData.englishText})`);
-                    setVocalEnergy(0.25);
-                    triggerHaptic();
-                  }}
-                  className="px-2.5 py-1 rounded-lg bg-primary/10 hover:bg-primary/20 text-primary text-[11px] font-bold flex items-center gap-1 transition"
-                  title="Simulate speaking target word for this level"
-                >
-                  <Mic size={12} /> 🗣️ Test Spoken "{activeLevelData.englishText}"
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const dummyKin: ArticulatoryKinematics = {
-                      source: "mediapipe_neural",
-                      lipApertureRatio: activeLevelData.targetKinematics.minLar || 0.06,
-                      mouthWidthRatio: (activeLevelData.targetKinematics.minMwr + activeLevelData.targetKinematics.maxMwr) / 2,
-                      jawDisplacementMm: activeLevelData.targetKinematics.minJawMm || 7.0,
-                      withinTarget: true,
-                      cue: "Optimal lip seal match",
-                      postureStatus: "Target Viseme Matched",
-                      landmarksDetected: true,
-                    };
-                    const simPred = lipClassifierRef.current.processFrame(dummyKin, activeLevelData, 0.18);
-                    setLipPrediction(simPred);
-                    setKinematics(dummyKin);
-                    triggerHaptic();
-                  }}
-                  className="px-2.5 py-1 rounded-lg bg-secondary/10 hover:bg-secondary/20 text-secondary text-[11px] font-bold flex items-center gap-1 transition"
-                  title="Simulate target lip kinematics"
-                >
-                  <span>👄 Test Lip Articulation</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setIsLiveListening((prev) => !prev)}
-                  className={`px-2.5 py-1 rounded-lg text-[11px] font-bold flex items-center gap-1 transition ${
-                    isLiveListening ? "bg-emerald-500/10 text-emerald-600 border border-emerald-500/20" : "bg-surface-container text-on-surface-variant"
-                  }`}
-                  title="Toggle continuous live microphone listening"
-                >
-                  <span className={`w-2 h-2 rounded-full ${isLiveListening ? "bg-emerald-500 animate-ping" : "bg-gray-400"}`} />
-                  {isLiveListening ? "Live Mic & Lips: Active" : "Live Mic: Paused"}
-                </button>
-              </div>
-
-              {/* Multimodal Diagnostic Score Breakdown Cards */}
-              <div className="grid grid-cols-3 gap-2 pt-1">
-                <div className="p-2 rounded-xl bg-surface-container-lowest/80 border border-on-surface/[0.04] text-center">
-                  <span className="text-[10px] text-on-surface-variant block">👄 Lip & Jaw Match</span>
-                  <span className="font-outfit font-bold text-xs text-primary">
-                    {lastEvaluation ? `${lastEvaluation.kinematicScore}%` : kinematics?.withinTarget ? "96%" : "85%"}
-                  </span>
-                </div>
-                <div className="p-2 rounded-xl bg-surface-container-lowest/80 border border-on-surface/[0.04] text-center">
-                  <span className="text-[10px] text-on-surface-variant block">🎵 Audio Tone & F0</span>
-                  <span className="font-outfit font-bold text-xs text-secondary">
-                    {lastEvaluation ? `${lastEvaluation.audioToneScore}%` : fundamentalFreq ? "92%" : "88%"}
-                  </span>
-                </div>
-                <div className="p-2 rounded-xl bg-surface-container-lowest/80 border border-on-surface/[0.04] text-center">
-                  <span className="text-[10px] text-on-surface-variant block">🗣️ Phoneme Precision</span>
-                  <span className="font-outfit font-bold text-xs text-tertiary-container">
-                    {lastEvaluation ? `${lastEvaluation.phonemicScore}%` : "94%"}
-                  </span>
-                </div>
-              </div>
-
-              {/* AI Pathologist Live Guidance */}
-              <div className="flex items-start gap-2 pt-1 text-xs text-on-surface-variant">
-                <CheckCircle2 size={15} className="text-primary shrink-0 mt-0.5" />
-                <span>
-                  <strong className="text-on-surface font-semibold">Multimodal AI Feedback: </strong>
-                  {lastEvaluation?.primaryFeedback || kinematics?.cue || activeLevelData.clinicalCue}
-                </span>
-              </div>
-            </div>
-
-{/* Real-time Formant Resonance & Pitch Contour Card */}
-            <div className="mt-3.5 p-3.5 rounded-2xl bg-surface-container-low flex flex-col gap-2 border border-on-surface/[0.04]">
+            {/* 2. BOTTOM LEFT: BIOSIGNALS */}
+            <div className="p-5 rounded-2xl bg-[#111726]/80 backdrop-blur-xl border border-white/[0.08] shadow-xl flex flex-col gap-4">
               <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-on-surface-variant flex items-center gap-1.5">
-                  <Activity size={14} className="text-secondary" /> Formant Resonance & Pitch Contour
-                </span>
-                <span className="text-xs text-secondary font-bold">
-                  {fundamentalFreq !== null ? `${fundamentalFreq} Hz • Stable` : "— Hz"}
-                </span>
-              </div>
-
-              {/* Animated Bezier Wave SVG */}
-              <div className="w-full h-12 relative flex items-center justify-center overflow-hidden">
-                <svg className="w-full h-full" fill="none" preserveAspectRatio="none" viewBox="0 0 360 60">
-                  <defs>
-                    <linearGradient id="stitchWaveGrad" x1="0" x2="1" y1="0" y2="0">
-                      <stop offset="0%" stopColor="#2170E4" stopOpacity="0.3" />
-                      <stop offset="50%" stopColor="#7C3AED" stopOpacity="0.9" />
-                      <stop offset="100%" stopColor="#2170E4" stopOpacity="0.3" />
-                    </linearGradient>
-                  </defs>
-                  <path
-                    d={`M0,30 Q45,${30 - vocalEnergy * 25} 90,30 T180,30 T270,${30 + vocalEnergy * 25} T360,30`}
-                    fill="none"
-                    stroke="url(#stitchWaveGrad)"
-                    strokeLinecap="round"
-                    strokeWidth="3"
-                    className="transition-all duration-75"
-                  />
-                  <path
-                    d={`M0,30 Q45,${30 + vocalEnergy * 20} 90,30 T180,30 T270,${30 - vocalEnergy * 20} T360,30`}
-                    fill="none"
-                    stroke="#6ffbbe"
-                    strokeDasharray="4 2"
-                    strokeOpacity="0.55"
-                    strokeWidth="1.5"
-                    className="transition-all duration-75"
-                  />
-                </svg>
-              </div>
-
-              <div className="flex justify-between items-center text-on-surface-variant text-[11px] pt-1">
-                <span>Fundamental F0: 140 - 220Hz</span>
-                <span className="text-tertiary-container font-semibold">Bilabial Seal: Balanced</span>
-              </div>
-            </div>
-          </div>
-
-          {/* Quick Clinician Biofeedback Advisory Note */}
-          <div className="bg-surface-container-lowest rounded-3xl p-5 shadow-stitch-card flex items-start gap-3.5 border border-on-surface/[0.05]">
-            <div className="p-2.5 rounded-full bg-primary-fixed text-primary shrink-0">
-              <Brain size={22} />
-            </div>
-            <div className="flex flex-col gap-1">
-              <div className="flex items-center gap-2">
-                <span className="font-outfit text-sm font-bold text-on-surface">Personalized Articulatory Cue</span>
-                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-secondary-fixed text-on-secondary-fixed">
-                  Live AI Guide
-                </span>
-              </div>
-              <p className="text-xs text-on-surface-variant leading-relaxed">
-                {kinematics?.cue ?? "Enable camera and start a session to receive personalised articulatory cues"}
-              </p>
-            </div>
-          </div>
-
-          {/* Facial sEMG Symmetry & Neuromuscular Tone Card */}
-          <div className="bg-surface-container-lowest rounded-3xl p-5 shadow-stitch-card flex flex-col gap-3.5 border border-on-surface/[0.05]">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <div className="p-2 rounded-full bg-tertiary-fixed text-tertiary-container">
-                  <Activity size={16} />
-                </div>
-                <div>
-                  <h3 className="font-outfit text-sm font-bold text-on-surface">Facial sEMG Symmetry</h3>
-                  <span className="text-[11px] text-on-surface-variant">Bilateral neuromuscular tone</span>
-                </div>
-              </div>
-              <span className="text-xs font-bold text-tertiary-container bg-tertiary-fixed/30 px-2.5 py-1 rounded-full">
-                {bilateralSymmetry !== null ? `${bilateralSymmetry.toFixed(1)}% Balanced` : "— Balanced"}
-              </span>
-            </div>
-
-            <div className="flex flex-col gap-2.5 text-xs">
-              <div>
-                <div className="flex justify-between text-on-surface-variant font-medium mb-1">
-                  <span>Left Zygomaticus Major</span>
-                  <span className="font-bold text-tertiary-container">
-                    {leftZygomaticus !== null ? `${leftZygomaticus} µV` : "— µV"}
+                <div className="flex items-center gap-2">
+                  <Activity size={16} className="text-cyan-400" />
+                  <span className="text-xs font-extrabold uppercase tracking-wider text-slate-200">
+                    Acoustic Biosignals & Kinematic Telemetry
                   </span>
                 </div>
-                <div className="h-2 w-full rounded-full bg-surface-container-low overflow-hidden">
-                  <div className="h-full rounded-full bg-gradient-to-r from-tertiary-container to-secondary" style={{ width: leftZygomaticus !== null ? `${leftZygomaticus}%` : "0%" }} />
+                <span className="text-xs font-mono font-bold text-cyan-400">
+                  {fundamentalFreq ? `${fundamentalFreq} Hz · Stable Pitch` : "Listening for Voice…"}
+                </span>
+              </div>
+
+              {/* Minimal Animated Audio Waveform Visualizer */}
+              <div className="w-full h-12 rounded-xl bg-[#0B0F17]/70 border border-white/[0.04] px-3 flex items-center justify-center overflow-hidden">
+                <div className="w-full flex items-center justify-between gap-1 h-8">
+                  {Array.from({ length: 32 }).map((_, i) => {
+                    const waveHeight = Math.max(
+                      10,
+                      Math.min(
+                        100,
+                        (Math.sin(i * 0.4 + (fundamentalFreq ?? 150) * 0.05) * 0.5 + 0.5) *
+                          (vocalEnergy * 320 + 15)
+                      )
+                    );
+                    return (
+                      <div
+                        key={i}
+                        className="flex-1 rounded-full transition-all duration-75"
+                        style={{
+                          height: `${waveHeight}%`,
+                          backgroundColor:
+                            i % 2 === 0
+                              ? vocalEnergy > 0.04
+                                ? "#10B981"
+                                : "#334155"
+                              : vocalEnergy > 0.04
+                              ? "#06B6D4"
+                              : "#1E293B",
+                          boxShadow:
+                            vocalEnergy > 0.05
+                              ? "0 0 8px rgba(16, 185, 129, 0.4)"
+                              : "none",
+                        }}
+                      />
+                    );
+                  })}
                 </div>
               </div>
 
-              <div>
-                <div className="flex justify-between text-on-surface-variant font-medium mb-1">
-                  <span>Right Zygomaticus Major</span>
-                  <span className="font-bold text-tertiary-container">
-                    {rightZygomaticus !== null ? `${rightZygomaticus} µV` : "— µV"}
-                  </span>
-                </div>
-                <div className="h-2 w-full rounded-full bg-surface-container-low overflow-hidden">
-                  <div className="h-full rounded-full bg-gradient-to-r from-tertiary-container to-secondary" style={{ width: rightZygomaticus !== null ? `${rightZygomaticus}%` : "0%" }} />
-                </div>
-              </div>
-
-              <div>
-                <div className="flex justify-between text-on-surface-variant font-medium mb-1">
-                  <span>Orbicularis Oris (Lip Sphincter)</span>
-                  <span className="font-bold text-primary">
-                    {orbicularisOris !== null ? `${orbicularisOris} µV` : "— µV"}
-                  </span>
-                </div>
-                <div className="h-2 w-full rounded-full bg-surface-container-low overflow-hidden">
-                  <div className="h-full rounded-full bg-gradient-to-r from-primary to-primary-container" style={{ width: orbicularisOris !== null ? `${orbicularisOris}%` : "0%" }} />
-                </div>
-              </div>
-
-              {/* EEG Readiness Potential */}
-              <div className="pt-2 border-t border-on-surface/[0.05]">
-                <div className="flex justify-between text-on-surface-variant font-medium mb-1">
-                  <span className="flex items-center gap-1"><Brain size={12} className="text-secondary" /> EEG Sensorimotor Readiness</span>
-                  <span className="font-bold text-secondary">{eegReadiness.toFixed(1)}% ERD</span>
-                </div>
-                <div className="h-2 w-full rounded-full bg-surface-container-low overflow-hidden">
-                  <div className="h-full rounded-full bg-gradient-to-r from-secondary to-primary" style={{ width: `${eegReadiness}%` }} />
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* RIGHT STAGE: Guided Speech Directive & Interactive Game (7 cols) */}
-        <div className="lg:col-span-7 flex flex-col gap-6">
-          {/* Rehabilitation Flow Stepper (Directly from Stitch) */}
-          <div className="bg-surface-container-lowest rounded-3xl p-4 shadow-stitch-card border border-on-surface/[0.05]">
-            <div className="flex items-center justify-between gap-1 overflow-x-auto pb-0.5">
-              {[
-                { num: "1", label: "See", icon: CheckCircle2, state: "ready" },
-                { num: "2", label: "Listen", icon: Volume2, state: "listening" },
-                { num: "3", label: "Speak", icon: Mic, state: "speaking" },
-                { num: "4", label: "AI Analyzing", icon: Sparkles, state: "analyzing" },
-                { num: "5", label: "Feedback", icon: Award, state: "result" },
-              ].map((step, idx, arr) => {
-                const isActive = stage === step.state || (step.state === "speaking" && stage === "listening");
-                const StepIcon = step.icon;
-                return (
-                  <div key={step.num} className="flex items-center gap-1.5 shrink-0">
-                    <div
-                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold transition-all ${
-                        isActive
-                          ? "bg-primary text-on-primary shadow-sm"
-                          : "bg-surface-container-low text-on-surface-variant"
-                      }`}
-                    >
-                      <StepIcon size={13} className={isActive ? "animate-pulse" : ""} />
-                      <span>{step.num}. {step.label}</span>
-                    </div>
-                    {idx < arr.length - 1 && (
-                      <span className="text-on-surface-variant/40 text-xs px-0.5">›</span>
-                    )}
+              {/* 4 Sleek Telemetry Meters */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                {/* Lip Aperture Ratio */}
+                <div className="p-3 rounded-xl bg-white/[0.03] border border-white/[0.05] flex flex-col gap-1">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase">Lip Aperture (LAR)</span>
+                  <div className="flex items-baseline justify-between">
+                    <span className="text-base font-extrabold text-emerald-400">
+                      {kinematics ? kinematics.lipApertureRatio.toFixed(2) : "0.00"}
+                    </span>
+                    <span className="text-[10px] font-mono text-slate-500">
+                      [{activeLevelData.targetKinematics.minLar} - {activeLevelData.targetKinematics.maxLar}]
+                    </span>
                   </div>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Target Practice Phrase Display Card */}
-          <div className="bg-surface-container-lowest rounded-3xl p-7 shadow-stitch-card relative overflow-hidden flex flex-col gap-5 border border-on-surface/[0.05]">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-bold text-primary tracking-wider uppercase flex items-center gap-1.5">
-                <Volume2 size={16} /> Target Articulation Directive
-              </span>
-              <span className="text-xs text-on-surface-variant bg-surface-container-low px-3 py-1 rounded-full font-semibold">
-                Phase II • Bilabial Flow
-              </span>
-            </div>
-
-            <div className="flex flex-col gap-3">
-              <p className="text-xs text-on-surface-variant font-medium">
-                Gently breathe in, articulate with intentional lip contact on each consonant, and vocalize smoothly:
-              </p>
-
-              {/* Large High-Contrast Target Text with Phonetic Diacritics */}
-              <div className="p-6 rounded-2xl bg-surface-container-low flex flex-col items-center justify-center text-center relative overflow-hidden border border-on-surface/[0.04]">
-                <div className="font-outfit text-2xl md:text-4xl text-on-surface font-bold tracking-tight leading-snug">
-                  “{targetPhrase}”
-                </div>
-                <div className="flex flex-wrap items-center justify-center gap-4 mt-3 text-xs text-on-surface-variant font-semibold">
-                  <span className="flex items-center gap-1">
-                    <span className="w-2 h-2 rounded-full bg-primary" /> Primary Target: /m/ /b/ /p/
-                  </span>
-                  <span className="flex items-center gap-1">
-                    <span className="w-2 h-2 rounded-full bg-secondary" /> Secondary Cadence
-                  </span>
-                  <span className="text-on-surface-variant">Cadence: 3.2 syllables/sec</span>
-                </div>
-              </div>
-            </div>
-
-            {/* Auditory Reference Model Player */}
-            <div className="flex flex-wrap items-center justify-between gap-4 p-4 rounded-2xl bg-surface-bright shadow-sm border border-on-surface/[0.04]">
-              <div className="flex items-center gap-3">
-                <button
-                  type="button"
-                  onClick={() => playAudioGuide('ta')}
-                  className="w-12 h-12 rounded-full bg-secondary text-on-secondary flex items-center justify-center hover:bg-secondary-container transition-all shadow-md active:scale-95"
-                  title="Play Auditory Phonetic Guide"
-                >
-                  <Play size={20} className={isPlayingAudioGuide ? "animate-pulse fill-current" : "fill-current"} />
-                </button>
-                <div className="flex flex-col">
-                  <span className="text-xs font-bold text-on-surface">Auditory Phonetic Guide</span>
-                  <span className="text-[11px] text-on-surface-variant">Speech-Language Pathologist Master Track (0.85x speed)</span>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <div className="h-6 flex items-center gap-1">
-                  {[3, 6, 2, 7, 4, 2, 6, 3].map((h, idx) => (
+                  <div className="h-1.5 w-full bg-white/[0.06] rounded-full overflow-hidden mt-1">
                     <div
-                      key={idx}
-                      className="w-1 bg-secondary rounded-full transition-all duration-150"
-                      style={{ height: isPlayingAudioGuide ? `${h * 4}px` : "10px" }}
+                      className="h-full bg-emerald-400 rounded-full transition-all duration-100"
+                      style={{ width: `${Math.min(100, (kinematics?.lipApertureRatio ?? 0) * 160)}%` }}
                     />
-                  ))}
+                  </div>
                 </div>
-                <span className="text-xs font-bold text-secondary">0:04</span>
+
+                {/* Mouth Width Ratio */}
+                <div className="p-3 rounded-xl bg-white/[0.03] border border-white/[0.05] flex flex-col gap-1">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase">Mouth Width (MWR)</span>
+                  <div className="flex items-baseline justify-between">
+                    <span className="text-base font-extrabold text-cyan-400">
+                      {kinematics ? kinematics.mouthWidthRatio.toFixed(2) : "0.00"}
+                    </span>
+                    <span className="text-[10px] font-mono text-slate-500">
+                      [{activeLevelData.targetKinematics.minMwr} - {activeLevelData.targetKinematics.maxMwr}]
+                    </span>
+                  </div>
+                  <div className="h-1.5 w-full bg-white/[0.06] rounded-full overflow-hidden mt-1">
+                    <div
+                      className="h-full bg-cyan-400 rounded-full transition-all duration-100"
+                      style={{ width: `${Math.min(100, (kinematics?.mouthWidthRatio ?? 0) * 150)}%` }}
+                    />
+                  </div>
+                </div>
+
+                {/* Acoustic Energy / Phonation */}
+                <div className="p-3 rounded-xl bg-white/[0.03] border border-white/[0.05] flex flex-col gap-1">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase">Voice Phonation</span>
+                  <div className="flex items-baseline justify-between">
+                    <span className="text-base font-extrabold text-indigo-400">
+                      {(vocalEnergy * 100).toFixed(0)}%
+                    </span>
+                    <span className="text-[10px] font-mono text-slate-500">
+                      {vocalEnergy > 0.04 ? "Active" : "Quiet"}
+                    </span>
+                  </div>
+                  <div className="h-1.5 w-full bg-white/[0.06] rounded-full overflow-hidden mt-1">
+                    <div
+                      className="h-full bg-indigo-400 rounded-full transition-all duration-100"
+                      style={{ width: `${Math.min(100, vocalEnergy * 250)}%` }}
+                    />
+                  </div>
+                </div>
+
+                {/* Facial Bilateral Symmetry */}
+                <div className="p-3 rounded-xl bg-white/[0.03] border border-white/[0.05] flex flex-col gap-1">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase">sEMG Symmetry</span>
+                  <div className="flex items-baseline justify-between">
+                    <span className="text-base font-extrabold text-teal-400">
+                      {bilateralSymmetry.toFixed(1)}%
+                    </span>
+                    <span className="text-[10px] font-mono text-slate-500">L/R Zygomatic</span>
+                  </div>
+                  <div className="h-1.5 w-full bg-white/[0.06] rounded-full overflow-hidden mt-1">
+                    <div
+                      className="h-full bg-teal-400 rounded-full transition-all duration-100"
+                      style={{ width: `${bilateralSymmetry}%` }}
+                    />
+                  </div>
+                </div>
               </div>
             </div>
           </div>
 
-          {/* Rehabilitation Game: The Harmonic Horizon / Biofeedback Resonance Sphere */}
-          <div className="bg-surface-container-lowest rounded-3xl p-6 shadow-stitch-card flex flex-col gap-4 relative overflow-hidden border border-on-surface/[0.05]">
-            <div className="flex items-center justify-between flex-wrap gap-2">
-              <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-full bg-secondary-fixed flex items-center justify-center text-on-secondary-fixed">
-                  <Sparkles size={16} />
-                </div>
-                <div>
-                  <span className="font-outfit text-sm font-bold text-on-surface block">
-                    The Harmonic Horizon • Biofeedback Resonance Sphere
+          {/* ─── RIGHT COLUMN: 3. THE GAME HUB (col-span-5) ─── */}
+          <div className="lg:col-span-5 flex flex-col">
+            <div className="h-full p-6 lg:p-7 rounded-2xl bg-[#111726]/90 backdrop-blur-2xl border border-white/[0.08] shadow-2xl flex flex-col justify-between gap-6 relative overflow-hidden">
+              {/* Soft Green Glow Flash upon Level Complete */}
+              <AnimatePresence>
+                {gameState === "success" && (
+                  <motion.div
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    transition={{ duration: 0.4 }}
+                    className="absolute inset-0 bg-emerald-500/10 pointer-events-none z-0 shadow-[inset_0_0_60px_rgba(16,185,129,0.3)]"
+                  />
+                )}
+              </AnimatePresence>
+
+              {/* Game Hub Top Row: Level & Stars */}
+              <div className="flex items-center justify-between relative z-10">
+                <div className="flex items-center gap-2">
+                  <span className="px-3 py-1 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 text-xs font-black tracking-wider uppercase">
+                    Level {activeLevelData.level} / 100
                   </span>
-                  <span className="text-[11px] text-on-surface-variant">
-                    Continuous pitch steadiness and phonemic vibrato guide the sphere
+                  <span className="text-xs text-slate-400 font-medium">
+                    {tierInfo.title}
                   </span>
                 </div>
-              </div>
 
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setIsGameMode((prev) => !prev)}
-                  className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-surface-container-low hover:bg-surface-container text-xs font-semibold text-on-surface-variant border border-on-surface/[0.06] transition-all"
-                >
-                  <Gamepad2 size={13} />
-                  <span>{isGameMode ? "Hide 2D Canvas" : "PhonoVocal Game"}</span>
-                </button>
-                <span className="px-3 py-1 rounded-full bg-tertiary-fixed text-on-tertiary-fixed text-xs font-bold">
-                  {masteryPct >= 90 ? "Synchronized • 95%+ Match" : "Active Acoustic Mesh"}
-                </span>
-              </div>
-            </div>
-
-            {/* Optional Full PhonoVocal Canvas Game Component */}
-            {isGameMode ? (
-              <div className="rounded-2xl overflow-hidden border border-on-surface/[0.06]">
-                <RehabGame
-                  targetPhrase={targetPhrase}
-                  isRecording={connectionState === "streaming"}
-                  vocalEnergy={vocalEnergy}
-                  kinematics={kinematics}
-                  masteryPercentage={masteryPct}
-                  onAttemptComplete={() => void finishAttempt()}
-                />
-              </div>
-            ) : (
-              /* Generative Visual Canvas Container (Stitch Bloom Sphere) */
-              <div className="w-full h-44 rounded-2xl bg-surface-container-low relative flex items-center justify-center overflow-hidden border border-on-surface/[0.04]">
-                {/* Orbital Guides */}
-                <div className="absolute w-72 h-72 rounded-full border-2 border-dashed border-outline-variant/30 pointer-events-none" />
-                <div className="absolute w-52 h-52 rounded-full border border-secondary-fixed-dim/40 pointer-events-none" />
-                <div className="absolute w-36 h-36 rounded-full border border-primary-fixed/60 pointer-events-none" />
-
-                {/* Luminous Kinetic Harmonic Bloom Sphere */}
-                <div
-                  className="w-24 h-24 rounded-full bg-gradient-to-tr from-primary via-primary-container to-secondary-container shadow-gemini-glow flex items-center justify-center transition-all duration-300 ease-out"
-                  style={{
-                    transform: `scale(${1 + Math.min(vocalEnergy * 2.2, 1.4)})`,
-                  }}
-                >
-                  <div className="w-14 h-14 rounded-full bg-white/30 backdrop-blur-sm flex items-center justify-center">
-                    <Waves size={24} className="text-white animate-pulse" />
-                  </div>
-                </div>
-
-                {/* Floating Ambient Target Orbit Rings */}
-                <div className="absolute left-6 bottom-3 flex items-center gap-2 text-xs text-on-surface-variant bg-surface-container-lowest/80 px-3 py-1 rounded-full backdrop-blur-sm border border-white/60">
-                  <span className="w-2 h-2 rounded-full bg-tertiary-container" />
-                  <span>Target Orbit: Stable Frequency Range</span>
-                </div>
-                <div className="absolute right-6 top-3 flex items-center gap-1.5 text-xs text-primary font-bold bg-surface-container-lowest/80 px-3 py-1 rounded-full backdrop-blur-sm border border-white/60">
-                  <Award size={14} />
-                  <span>+45 NeuroPlasticity Pts</span>
+                {/* Level Stars Rating */}
+                <div className="flex items-center gap-1 text-amber-400">
+                  {[1, 2, 3].map((starIdx) => {
+                    const starsEarned = levelStars[currentLevel] || 0;
+                    return (
+                      <Star
+                        key={starIdx}
+                        size={16}
+                        className={starIdx <= starsEarned ? "fill-amber-400 text-amber-400" : "text-slate-600"}
+                      />
+                    );
+                  })}
                 </div>
               </div>
-            )}
-          </div>
 
-          {/* Tactile Accessible Action & Speech Capture Bar (Touch Target 4.5rem height) */}
-          <div className="bg-surface-container-lowest rounded-3xl p-6 shadow-stitch-card flex flex-col gap-6 border border-on-surface/[0.05]">
-            <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
-              {/* Main Interactive Mic Button */}
-              {stage === "listening" ? (
-                <button
-                  type="button"
-                  onClick={() => void finishAttempt()}
-                  className="w-full sm:flex-1 h-[4.5rem] rounded-full bg-gradient-to-r from-secondary to-primary text-white px-6 flex items-center justify-between shadow-lg active:scale-98 transition-all"
-                >
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-full bg-white/20 flex items-center justify-center">
-                      <Mic size={22} className="animate-bounce" />
-                    </div>
-                    <div className="flex flex-col text-left">
-                      <span className="font-outfit text-sm font-bold">Listening… Speak Clearly</span>
-                      <span className="text-[11px] text-white/80">Tap here to finish & evaluate</span>
-                    </div>
-                  </div>
-                  <span className="text-xs font-bold bg-white/20 px-3 py-1 rounded-full">
-                    Streaming 16kHz
-                  </span>
-                </button>
-              ) : stage === "analyzing" ? (
-                <div className="w-full sm:flex-1 h-[4.5rem] rounded-full bg-surface-container-high border border-primary-fixed-dim/60 text-on-surface px-6 flex flex-col justify-center gap-1 shadow-sm">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2.5">
-                      <div className="w-8 h-8 rounded-full bg-primary-fixed flex items-center justify-center text-primary">
-                        <Sparkles size={16} className="animate-spin" />
-                      </div>
-                      <span className="font-outfit text-sm font-bold text-on-surface tracking-wide">
-                        AI Multimodal Inferencing…
+              {/* Target Word Hero (Framer Motion Animated Transition) */}
+              <div className="flex flex-col items-center text-center gap-2 relative z-10 my-1">
+                <AnimatePresence mode="wait">
+                  <motion.div
+                    key={currentLevel}
+                    initial={{ opacity: 0, y: 12 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -12 }}
+                    transition={{ duration: 0.35, ease: "easeOut" }}
+                    className="flex flex-col items-center gap-1.5"
+                  >
+                    <div className="flex items-baseline gap-3">
+                      <span className="text-4xl sm:text-5xl font-extrabold tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 via-teal-300 to-cyan-300">
+                        {targetTamil}
+                      </span>
+                      <span className="text-2xl sm:text-3xl font-extrabold text-white">
+                        / {targetPhrase}
                       </span>
                     </div>
-                    <span className="text-xs font-bold text-primary">95.42% Benchmark</span>
-                  </div>
-                  <div className="w-full h-1.5 rounded-full bg-surface-container-lowest overflow-hidden">
-                    <div className="h-full bg-gradient-to-tr from-primary to-secondary rounded-full w-[85%] transition-all duration-500" />
-                  </div>
-                </div>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => void startAttempt()}
-                  disabled={busy}
-                  className="w-full sm:flex-1 h-[4.5rem] rounded-full bg-gradient-to-r from-primary via-primary-container to-secondary text-white px-6 flex items-center justify-between shadow-lg hover:shadow-xl active:scale-98 transition-all"
-                >
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-full bg-white/20 flex items-center justify-center">
-                      <Mic size={22} />
-                    </div>
-                    <div className="flex flex-col text-left">
-                      <span className="font-outfit text-base font-bold">Tap to Start Speech Therapy</span>
-                      <span className="text-[11px] text-white/80">Live 3D camera mirror & acoustic capture</span>
-                    </div>
-                  </div>
-                  <span className="text-xs font-bold bg-white/20 px-3 py-1 rounded-full">
-                    {starting ? "Starting…" : "Ready"}
-                  </span>
-                </button>
-              )}
 
-              {/* Retry & Skip Buttons */}
-              <div className="flex items-center gap-3 w-full sm:w-auto">
-                <button
-                  type="button"
-                  onClick={() => setSimulatedState("ready")}
-                  className="flex-1 sm:flex-none h-14 px-5 rounded-full bg-surface-container-low hover:bg-surface-container text-on-surface text-xs font-bold flex items-center justify-center gap-2 transition-all border border-on-surface/[0.06]"
-                  title="Retry current exercise"
-                >
-                  <RotateCcw size={16} />
-                  <span>Retry</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setSimulatedState("next")}
-                  className="flex-1 sm:flex-none h-14 px-5 rounded-full bg-surface-container-low hover:bg-surface-container text-on-surface text-xs font-bold flex items-center justify-center gap-2 transition-all border border-on-surface/[0.06]"
-                  title="Skip to next exercise"
-                >
-                  <SkipForward size={16} />
-                  <span>Skip</span>
-                </button>
-              </div>
-            </div>
+                    <p className="text-xs font-mono text-slate-400">
+                      Pronunciation: <span className="text-indigo-300">{activeLevelData.transliteration}</span> · Meaning: <span className="text-slate-200 font-medium">{activeLevelData.meaning}</span>
+                    </p>
+                  </motion.div>
+                </AnimatePresence>
 
-            {/* AI Multimodal Diagnostic Output Container */}
-            <div className="p-5 rounded-2xl bg-surface-container-low border border-on-surface/[0.04] transition-all duration-300">
-              <div className="flex items-center justify-between mb-2">
-                <div className="flex items-center gap-2">
-                  <Sparkles size={18} className="text-primary" />
-                  <span className="font-outfit text-sm font-bold text-on-surface">Neural Diagnostic Stream</span>
-                </div>
-                <div className="flex items-center gap-1.5 px-3 py-0.5 rounded-full bg-secondary-fixed text-on-secondary-fixed text-[11px] font-bold">
-                  <span className="w-2 h-2 rounded-full bg-secondary animate-pulse" />
-                  <span>Inferencing 48kHz Audio & Video Mesh</span>
+                {/* Dual Audio Guide Buttons */}
+                <div className="flex items-center gap-2 mt-1">
+                  <button
+                    type="button"
+                    onClick={() => playAudioGuide("ta")}
+                    disabled={isPlayingAudioGuide}
+                    className="px-3.5 py-1 rounded-full bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/20 text-xs font-bold flex items-center gap-1.5 transition-all shadow-sm active:scale-95"
+                  >
+                    <Volume2 size={13} /> <span>🔊 தமிழ்</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => playAudioGuide("en")}
+                    disabled={isPlayingAudioGuide}
+                    className="px-3.5 py-1 rounded-full bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-300 border border-indigo-500/20 text-xs font-bold flex items-center gap-1.5 transition-all shadow-sm active:scale-95"
+                  >
+                    <Volume2 size={13} /> <span>🔊 English</span>
+                  </button>
                 </div>
               </div>
 
-              <p className="text-xs text-on-surface-variant mt-1">
-                {prediction?.predicted_label ? (
-                  <span>Recognized: <strong className="text-on-surface font-semibold">“{prediction.predicted_label}”</strong></span>
-                ) : (
-                  <span>Analyzing phoneme onset velocity, bilabial seal compression, and formant frequency contour for target phrase “{targetPhrase}”…</span>
-                )}
-              </p>
+              {/* PROMINENT ANIMATED CIRCULAR PROGRESS RING */}
+              <div className="flex flex-col items-center justify-center relative z-10 my-2">
+                <div className="relative w-40 h-40 flex items-center justify-center">
+                  <svg className="w-full h-full transform -rotate-90" viewBox="0 0 140 140">
+                    {/* Background Track */}
+                    <circle
+                      cx="70"
+                      cy="70"
+                      r={ringRadius}
+                      fill="transparent"
+                      stroke="rgba(255, 255, 255, 0.06)"
+                      strokeWidth="10"
+                    />
 
-              {/* 3 Metrics Cards */}
-              <div className="mt-4 pt-3 grid grid-cols-3 gap-3 text-center">
-                <div className="p-3 bg-surface-container-lowest rounded-2xl shadow-sm border border-on-surface/[0.04]">
-                  <span className="text-[11px] text-on-surface-variant block font-medium">Bilabial Seal</span>
-                  <span className="font-outfit text-xl font-bold text-tertiary-container">94%</span>
-                </div>
-                <div className="p-3 bg-surface-container-lowest rounded-2xl shadow-sm border border-on-surface/[0.04]">
-                  <span className="text-[11px] text-on-surface-variant block font-medium">Resonance Purity</span>
-                  <span className="font-outfit text-xl font-bold text-secondary">{masteryPct > 0 ? `${masteryPct}%` : "89%"}</span>
-                </div>
-                <div className="p-3 bg-surface-container-lowest rounded-2xl shadow-sm border border-on-surface/[0.04]">
-                  <span className="text-[11px] text-on-surface-variant block font-medium">Motor Pacing</span>
-                  <span className="font-outfit text-xl font-bold text-primary">91%</span>
-                </div>
-              </div>
+                    {/* Animated Progress Ring */}
+                    <circle
+                      cx="70"
+                      cy="70"
+                      r={ringRadius}
+                      fill="transparent"
+                      stroke={gameState === "success" ? "#10B981" : "#10B981"}
+                      strokeWidth="10"
+                      strokeDasharray={ringCircumference}
+                      strokeDashoffset={strokeOffset}
+                      strokeLinecap="round"
+                      className="transition-all duration-300 ease-out"
+                      style={{
+                        filter: currentConfidence >= 60 ? "drop-shadow(0 0 10px rgba(16, 185, 129, 0.6))" : "none",
+                      }}
+                    />
+                  </svg>
 
-              {qualityQuery.data?.quality_state && (
-                <div className="mt-3 pt-2.5 border-t border-on-surface/[0.05] flex items-center justify-between text-[11px]">
-                  <span className="text-on-surface-variant flex items-center gap-1.5">
-                    <ShieldCheck size={13} className="text-tertiary-container" /> Acoustic Signal Integrity:
-                  </span>
-                  <span className="font-bold text-tertiary-container uppercase tracking-wide">
-                    {qualityQuery.data.quality_state}
-                  </span>
+                  {/* Inside Circle Content */}
+                  <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
+                    {gameState === "success" ? (
+                      <motion.div
+                        initial={{ scale: 0.8, opacity: 0 }}
+                        animate={{ scale: 1, opacity: 1 }}
+                        className="flex flex-col items-center text-emerald-400"
+                      >
+                        <CheckCircle2 size={32} className="text-emerald-400 animate-bounce" />
+                        <span className="text-xs font-black uppercase tracking-wider mt-1">Cleared!</span>
+                        <span className="text-[10px] text-emerald-300/80">+200 XP</span>
+                      </motion.div>
+                    ) : gameState === "stepping_up" ? (
+                      <div className="flex flex-col items-center text-indigo-300">
+                        <Sparkles size={26} className="animate-spin text-indigo-400" />
+                        <span className="text-xs font-bold mt-1">Next Word…</span>
+                      </div>
+                    ) : (
+                      <div className="flex flex-col items-center">
+                        <span className="text-3xl font-black text-white tracking-tight">
+                          {currentConfidence}%
+                        </span>
+                        <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wide">
+                          Goal: {SUCCESS_THRESHOLD}%
+                        </span>
+                      </div>
+                    )}
+                  </div>
                 </div>
-              )}
-            </div>
 
-            {/* Real-Time Feedback Callout Card */}
-            <div className="p-4 rounded-2xl bg-tertiary-fixed/40 text-on-tertiary-fixed flex items-start gap-3.5 border border-tertiary-fixed-dim/50">
-              <CheckCircle size={22} className="text-tertiary-container mt-0.5 shrink-0" />
-              <div className="flex flex-col gap-1">
-                <span className="font-outfit text-xs font-bold">Real-time Rehabilitation Feedback</span>
-                <p className="text-xs leading-relaxed">
-                  Excellent bilabial closure on target phrase. Speech rate was steady, gentle, and effortless. Keep jaw muscles completely relaxed.
+                <p className="text-[11px] text-slate-400 text-center mt-2 max-w-xs">
+                  {gameState === "success"
+                    ? "✨ Wonderful speech articulation! Moving to next level…"
+                    : currentConfidence >= 60
+                    ? "Great pronunciation! Keep your vocal tone steady to clear level."
+                    : "Form mouth shape and vocalize clearly into the microphone."}
                 </p>
+              </div>
+
+              {/* Real-Time Detection Badges (Lip-Reading & Mic Speech) */}
+              <div className="flex flex-col gap-2.5 relative z-10">
+                {/* Lip-Reading Prediction */}
+                <div className="p-3 rounded-xl bg-white/[0.03] border border-emerald-500/20 flex items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <span className="text-base">👄</span>
+                    <div className="flex flex-col text-left">
+                      <span className="text-[10px] uppercase font-bold text-emerald-400">Lip-Reading Detector</span>
+                      <span className="text-xs font-bold text-white">
+                        {lipPrediction?.wordTamil || targetTamil} ({lipPrediction?.wordEnglish || targetPhrase})
+                      </span>
+                    </div>
+                  </div>
+                  <span className="text-[11px] font-mono font-bold text-emerald-400">
+                    {lipPrediction?.confidence ?? 0}% Lip Match
+                  </span>
+                </div>
+
+                {/* Microphone Speech Prediction */}
+                <div className="p-3 rounded-xl bg-white/[0.03] border border-cyan-500/20 flex items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <span className="text-base">🎤</span>
+                    <div className="flex flex-col text-left">
+                      <span className="text-[10px] uppercase font-bold text-cyan-400">Microphone Audio AI</span>
+                      <span className="text-xs font-bold text-white truncate max-w-[180px]">
+                        {recognizedSpeech ? `“${recognizedSpeech}”` : speechPrediction?.rawTranscript ? `“${speechPrediction.rawTranscript}”` : "Speak target word…"}
+                      </span>
+                    </div>
+                  </div>
+                  <span className="text-[11px] font-mono font-bold text-cyan-400">
+                    {speechPrediction?.confidence ?? 0}% Acoustic
+                  </span>
+                </div>
+              </div>
+
+              {/* Supportive Clinical Cue & Quick Articulation Tests */}
+              <div className="pt-2 border-t border-white/[0.06] flex flex-col gap-3 relative z-10">
+                <div className="flex items-start gap-2 text-xs text-slate-300">
+                  <Check size={14} className="text-emerald-400 shrink-0 mt-0.5" />
+                  <span>
+                    <strong className="text-white font-semibold">Clinical Cue: </strong>
+                    {activeLevelData.clinicalCue}
+                  </span>
+                </div>
+
+                {/* Instant Verification Chips */}
+                <div className="flex items-center gap-2 flex-wrap">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      // Simulates speaking target word cleanly, instantly satisfying >= 85% threshold
+                      const sim = speechDetectorRef.current.simulateSpokenWord(targetTamil, targetPhrase);
+                      setSpeechPrediction(sim);
+                      setRecognizedSpeech(`${targetTamil} (${targetPhrase})`);
+                      setVocalEnergy(0.28);
+                      triggerHaptic();
+                    }}
+                    className="px-3 py-1.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-xs font-bold flex items-center gap-1.5 transition-all active:scale-95"
+                    title="Simulate speech to trigger instant level clearing"
+                  >
+                    <Mic size={13} /> 🗣️ Test Spoken "{targetPhrase}"
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const dummyKin: ArticulatoryKinematics = {
+                        source: "mediapipe_neural",
+                        lipApertureRatio: activeLevelData.targetKinematics.minLar || 0.05,
+                        mouthWidthRatio: (activeLevelData.targetKinematics.minMwr + activeLevelData.targetKinematics.maxMwr) / 2,
+                        jawDisplacementMm: activeLevelData.targetKinematics.minJawMm || 7.0,
+                        withinTarget: true,
+                        cue: "Optimal bilabial articulatory seal",
+                        postureStatus: "Target Viseme Matched",
+                        landmarksDetected: true,
+                      };
+                      const simPred = lipClassifierRef.current.processFrame(dummyKin, activeLevelData, 0.22);
+                      setLipPrediction(simPred);
+                      setKinematics(dummyKin);
+                      triggerHaptic();
+                    }}
+                    className="px-3 py-1.5 rounded-lg bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 text-xs font-bold flex items-center gap-1.5 transition-all active:scale-95"
+                    title="Simulate target lip movement"
+                  >
+                    <span>👄 Test Lip Articulation</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setIsLiveListening((prev) => !prev)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all ${
+                      isLiveListening
+                        ? "bg-indigo-500/10 text-indigo-300 border border-indigo-500/30"
+                        : "bg-white/[0.04] text-slate-400 border border-white/[0.06]"
+                    }`}
+                  >
+                    {isLiveListening ? <Mic size={13} /> : <MicOff size={13} />}
+                    <span>{isLiveListening ? "Mic Active" : "Mic Muted"}</span>
+                  </button>
+                </div>
               </div>
             </div>
           </div>
         </div>
-      </div>
 
-      {/* 4. Bottom Floating Exercise Navigation & Clinician Interaction Dock */}
-      <div className="w-full mt-4 bg-surface-container-lowest rounded-3xl p-5 shadow-stitch-card flex flex-col md:flex-row items-center justify-between gap-6 border border-on-surface/[0.05]">
-        {/* 8-Step Navigation Tracker */}
-        <div className="flex items-center gap-3">
-          <span className="text-xs font-bold text-on-surface-variant shrink-0">Exercise Progression:</span>
-          <div className="flex items-center gap-2">
-            {[1, 2, 3, 4, 5, 6, 7, 8].map((stepNum) => {
-              const isComplete = stepNum < 3;
-              const isCurrent = stepNum === 3;
+        {/* ─────────────────────────────────────────────────────────────────────────────
+            4. BOTTOM: HORIZONTAL PROGRESSION TIMELINE / NODE-MAP
+           ───────────────────────────────────────────────────────────────────────────── */}
+        <div className="p-5 rounded-2xl bg-[#111726]/80 backdrop-blur-xl border border-white/[0.08] shadow-xl flex flex-col gap-3.5">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Trophy size={16} className="text-amber-400" />
+              <span className="text-xs font-extrabold uppercase tracking-wider text-slate-200">
+                100-Level Rehabilitation Journey (Levels {timelineLevels[0]} – {timelineLevels[timelineLevels.length - 1]})
+              </span>
+            </div>
+            <span className="text-xs text-slate-400">
+              Highest Unlocked: <strong className="text-emerald-400">Level {unlockedLevel}</strong>
+            </span>
+          </div>
+
+          {/* Node-Map Track */}
+          <div className="flex items-center gap-3 overflow-x-auto pb-2 scrollbar-none">
+            {timelineLevels.map((lvl) => {
+              const lvlData = getLevelData(lvl);
+              const isCurrent = lvl === currentLevel;
+              const isPassed = lvl < unlockedLevel || (levelStars[lvl] && levelStars[lvl] > 0);
+              const isUnlocked = lvl <= unlockedLevel;
+
               return (
-                <div
-                  key={stepNum}
-                  className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold transition-all ${
-                    isComplete
-                      ? "bg-tertiary-container text-on-tertiary shadow-sm"
-                      : isCurrent
-                      ? "w-9 h-9 bg-primary text-on-primary ring-4 ring-primary-fixed shadow-md"
-                      : "bg-surface-container-high text-on-surface-variant"
+                <button
+                  key={lvl}
+                  type="button"
+                  onClick={() => {
+                    if (isUnlocked) setCurrentLevel(lvl);
+                  }}
+                  disabled={!isUnlocked}
+                  className={`flex flex-col items-center justify-between p-3 min-w-[115px] h-[90px] rounded-xl border transition-all relative ${
+                    isCurrent
+                      ? "bg-gradient-to-b from-emerald-500/20 to-teal-500/10 border-emerald-500 shadow-[0_0_20px_rgba(16,185,129,0.3)] scale-105"
+                      : isPassed
+                      ? "bg-white/[0.03] border-white/[0.08] hover:border-emerald-500/40 hover:bg-white/[0.06]"
+                      : isUnlocked
+                      ? "bg-white/[0.02] border-white/[0.05] hover:border-white/[0.15]"
+                      : "bg-black/20 border-white/[0.02] opacity-40 cursor-not-allowed"
                   }`}
-                  title={`Exercise ${stepNum}`}
                 >
-                  {isComplete ? <Check size={14} /> : stepNum}
-                </div>
+                  <div className="flex items-center justify-between w-full">
+                    <span className={`text-[10px] font-black ${isCurrent ? "text-emerald-400" : "text-slate-400"}`}>
+                      LVL {lvl}
+                    </span>
+                    {isCurrent ? (
+                      <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+                    ) : !isUnlocked ? (
+                      <Lock size={12} className="text-slate-600" />
+                    ) : (
+                      <div className="flex items-center gap-0.5">
+                        <Star size={10} className="fill-amber-400 text-amber-400" />
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex flex-col items-center my-0.5">
+                    <span className={`text-sm font-bold truncate max-w-[95px] ${isCurrent ? "text-white" : "text-slate-200"}`}>
+                      {lvlData.tamilText}
+                    </span>
+                    <span className="text-[10px] font-medium text-slate-400 truncate max-w-[95px]">
+                      {lvlData.englishText}
+                    </span>
+                  </div>
+
+                  <span className={`text-[9px] font-bold uppercase tracking-wider px-2 py-0.2 rounded-full ${
+                    isCurrent
+                      ? "bg-emerald-500 text-slate-950"
+                      : isPassed
+                      ? "text-emerald-400"
+                      : "text-slate-500"
+                  }`}>
+                    {isCurrent ? "Current" : isPassed ? "Cleared" : `Tier ${lvlData.tier}`}
+                  </span>
+                </button>
               );
             })}
           </div>
         </div>
 
-        {/* Right Interaction Controls */}
-        <div className="flex items-center gap-4 w-full md:w-auto justify-end">
-          <Link
-            to="/patient/progress"
-            className="hidden sm:inline-flex items-center gap-1.5 text-xs font-semibold text-primary hover:underline px-3 py-2 rounded-full hover:bg-surface-container-low transition-all"
-          >
-            <span>Progress History</span>
-            <ArrowRight size={13} />
-          </Link>
-
-          <button
-            type="button"
-            onClick={() => setClinicianNoteOpen((prev) => !prev)}
-            className="h-12 px-4 rounded-full bg-surface-container-low hover:bg-surface-container text-on-surface text-xs font-bold flex items-center gap-2 transition-colors border border-on-surface/[0.06]"
-          >
-            <Brain size={16} className="text-primary" />
-            <span className="hidden sm:inline">Dr. Harrison’s Note: Focus on relaxed jaw</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => void finishSession()}
-            disabled={busy || finishingSession}
-            className="h-12 px-6 rounded-full stitch-btn-primary text-xs font-bold"
-          >
-            <CheckCircle size={16} />
-            <span>{finishingSession ? "Saving…" : "Complete Session"}</span>
-          </button>
-        </div>
-      </div>
-
-      {/* Clinician Note Slideout Drawer */}
-      {clinicianNoteOpen && (
-        <div className="fixed bottom-6 right-6 max-w-sm p-5 rounded-3xl bg-surface-container-lowest shadow-2xl border border-primary/20 z-50 flex flex-col gap-2">
-          <div className="flex items-center justify-between">
-            <span className="font-outfit text-xs font-bold text-primary">SLP Clinical Advisory</span>
-            <button
-              type="button"
-              onClick={() => setClinicianNoteOpen(false)}
-              className="text-on-surface-variant hover:text-on-surface text-xs font-bold"
+        {/* ─────────────────────────────────────────────────────────────────────────────
+            100-LEVEL CURRICULUM MAP MODAL
+           ───────────────────────────────────────────────────────────────────────────── */}
+        <AnimatePresence>
+          {levelMapOpen && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4 sm:p-6"
             >
-              ✕
-            </button>
-          </div>
-          <p className="text-xs text-on-surface leading-relaxed">
-            “Encourage natural pauses before initiating bilabial closures. Symmetrical zygomaticus activation indicates optimal motor tone without compensatory strain.”
-          </p>
-          <span className="text-[10px] text-on-surface-variant font-medium mt-1">
-            Dr. Emily Harrison, Lead Speech-Language Pathologist
-          </span>
-        </div>
-      )}
+              <motion.div
+                initial={{ scale: 0.95, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                exit={{ scale: 0.95, opacity: 0 }}
+                className="w-full max-w-4xl max-h-[85vh] bg-[#111726] border border-white/[0.1] rounded-2xl shadow-2xl flex flex-col overflow-hidden"
+              >
+                {/* Modal Header */}
+                <div className="p-5 border-b border-white/[0.08] flex items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <div className="p-2 rounded-xl bg-indigo-500/20 text-indigo-400">
+                      <MapIcon size={20} />
+                    </div>
+                    <div>
+                      <h2 className="text-base font-extrabold text-white">
+                        100-Level Speech Rehabilitation Curriculum Map
+                      </h2>
+                      <p className="text-xs text-slate-400">
+                        Choose any unlocked level to practice specific phonetic targets
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setLevelMapOpen(false)}
+                    className="p-2 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] text-slate-400 hover:text-white transition"
+                  >
+                    <X size={18} />
+                  </button>
+                </div>
+
+                {/* Tier Tabs */}
+                <div className="flex items-center gap-1.5 px-5 pt-3 overflow-x-auto border-b border-white/[0.06] scrollbar-none">
+                  {[1, 2, 3, 4, 5].map((tierNum) => {
+                    const desc = REHAB_TIER_DESCRIPTIONS[tierNum];
+                    const isActive = selectedTierTab === tierNum;
+                    return (
+                      <button
+                        key={tierNum}
+                        type="button"
+                        onClick={() => setSelectedTierTab(tierNum as 1 | 2 | 3 | 4 | 5)}
+                        className={`px-4 py-2 rounded-t-xl text-xs font-bold transition-all border-b-2 whitespace-nowrap ${
+                          isActive
+                            ? "bg-white/[0.06] border-emerald-400 text-white"
+                            : "border-transparent text-slate-400 hover:text-white"
+                        }`}
+                      >
+                        Tier {tierNum}: {desc.title}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* 20 Levels in Selected Tier */}
+                <div className="p-5 overflow-y-auto flex-1 grid grid-cols-2 sm:grid-cols-4 md:grid-cols-5 gap-3">
+                  {getLevelsByTier(selectedTierTab).map((item) => {
+                    const isCurrent = item.level === currentLevel;
+                    const isUnlocked = item.level <= unlockedLevel;
+                    const stars = levelStars[item.level] || 0;
+
+                    return (
+                      <button
+                        key={item.level}
+                        type="button"
+                        onClick={() => {
+                          if (isUnlocked) {
+                            setCurrentLevel(item.level);
+                            setLevelMapOpen(false);
+                          }
+                        }}
+                        disabled={!isUnlocked}
+                        className={`p-3 rounded-xl border flex flex-col items-center justify-between text-center gap-1 transition-all ${
+                          isCurrent
+                            ? "bg-emerald-500/20 border-emerald-500 shadow-[0_0_15px_rgba(16,185,129,0.3)]"
+                            : isUnlocked
+                            ? "bg-white/[0.03] border-white/[0.08] hover:border-emerald-500/40 hover:bg-white/[0.06]"
+                            : "bg-black/20 border-white/[0.03] opacity-35 cursor-not-allowed"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between w-full text-[10px]">
+                          <span className="font-bold text-slate-400">#{item.level}</span>
+                          {!isUnlocked ? (
+                            <Lock size={12} className="text-slate-600" />
+                          ) : (
+                            <div className="flex items-center gap-0.5 text-amber-400">
+                              <Star size={10} className="fill-amber-400" />
+                              <span>{stars}</span>
+                            </div>
+                          )}
+                        </div>
+
+                        <span className="text-base font-bold text-white mt-1">{item.tamilText}</span>
+                        <span className="text-xs text-slate-300 font-medium">{item.englishText}</span>
+                        <span className="text-[10px] text-slate-500 font-mono">{item.transliteration}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
     </div>
   );
 }
