@@ -69,6 +69,26 @@ npm run dev
 
 ---
 
+## Vercel Cloud Deployment
+
+The frontend is fully configured for seamless deployment to Vercel:
+
+### Option A: Import from GitHub (Recommended)
+1. Go to [vercel.com/new](https://vercel.com/new).
+2. Select and import the repository `h4rdxcry/NeuroSpeech-Rehab`.
+3. Vercel automatically detects `vercel.json` (Vite, output `frontend/dist`).
+4. (Optional) Set the environment variable `VITE_API_URL` to your production backend URL.
+5. Click **Deploy**.
+
+### Option B: Deploy via Vercel CLI
+```bash
+npx vercel
+# For production deployment:
+npx vercel --prod
+```
+
+---
+
 ## Access & Demo Accounts
 
 * **Web Application UI**: [http://localhost:3000](http://localhost:3000)
