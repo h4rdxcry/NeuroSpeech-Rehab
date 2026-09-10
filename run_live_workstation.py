@@ -19,7 +19,7 @@ if not PYTHON_EXE.exists():
     PYTHON_EXE = Path(sys.executable)
 
 CLOUDFLARED = ROOT / "cloudflared.exe"
-VERCEL_PUBLIC_URL = "https://frontend-gray-eight-0iirmwms41.vercel.app"
+VERCEL_PUBLIC_URL = "https://neurospeech.vercel.app"
 
 
 def main():
