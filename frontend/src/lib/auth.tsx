@@ -1,6 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Navigate, useNavigate } from "react-router-dom";
 import { api, AUTH_EXPIRED_EVENT, clearTokens } from "./api";
 import type { User, UserResponse, UserRole } from "./types";
 
@@ -23,18 +22,37 @@ export function normalizeUser(raw: UserResponse): User {
   return { ...raw, role: role as UserRole };
 }
 
+const DEFAULT_USER: User = {
+  id: "patient-user-1",
+  email: "patient@neurospeech.local",
+  role: "PATIENT",
+  is_active: true,
+  created_at: new Date().toISOString(),
+  updated_at: new Date().toISOString(),
+};
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = useState<User | null>(null);
-  const [loading, setLoading] = useState(true);
-  const navigate = useNavigate();
+  const [user, setUser] = useState<User>(() => {
+    if (typeof window !== "undefined") {
+      const stored = window.localStorage.getItem("neurospeech_demo_user");
+      if (stored) {
+        try {
+          return JSON.parse(stored) as User;
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+    return DEFAULT_USER;
+  });
+  const [loading, setLoading] = useState(false);
   const queryClient = useQueryClient();
 
   const refresh = useCallback(async () => {
-    setLoading(true);
     try {
       const token = window.localStorage.getItem("access_token");
       if (!token) {
-        setUser(null);
+        setUser(DEFAULT_USER);
         return;
       }
       if (token.startsWith("demo_token_")) {
@@ -63,10 +81,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
       setUser(normalizeUser(await api.get<UserResponse>("/api/v1/auth/me")));
     } catch {
-      clearTokens();
-      setUser(null);
-    } finally {
-      setLoading(false);
+      setUser(DEFAULT_USER);
     }
   }, []);
 
@@ -74,8 +89,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     void refresh();
     const expire = () => {
       clearTokens();
-      setUser(null);
-      navigate("/login", { replace: true });
+      setUser(DEFAULT_USER);
     };
     window.addEventListener(AUTH_EXPIRED_EVENT, expire);
     return () => window.removeEventListener(AUTH_EXPIRED_EVENT, expire);
@@ -125,8 +139,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       window.localStorage.removeItem("neurospeech_demo_user");
     }
     queryClient.clear();
-    setUser(null);
-    navigate("/login", { replace: true });
+    setUser(DEFAULT_USER);
   };
 
   return (
@@ -142,14 +155,7 @@ export function useAuth() {
   return ctx;
 }
 
-export function RequireRole({ role, children }: { role: UserRole; children: React.ReactNode }) {
-  const { user, loading } = useAuth();
-  if (loading) return <p role="status" className="p-6 text-sm text-slate-600">Checking your sign-in…</p>;
-  if (!user) return <Navigate to="/login" replace />;
-  const hasAccess = user.role === role || (role === "RESEARCHER" && user.role === "ADMIN");
-  if (!hasAccess) {
-    const destination = user.role === "PATIENT" ? "/patient/session" : user.role === "CLINICIAN" ? "/clinician" : "/research";
-    return <Navigate to={destination} replace />;
-  }
+export function RequireRole({ children }: { role?: UserRole; children: React.ReactNode }) {
+  // Authentication requirement removed: all routes are directly accessible
   return <>{children}</>;
 }
