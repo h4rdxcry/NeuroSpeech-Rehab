@@ -74,4 +74,17 @@ ml_training/mlruns/
 ml_training/outputs/
 mlruns/
 work/
+work/**
+
+# Audio & Video Recordings (Clinical Privacy)
+*.wav
+*.mp3
+*.mp4
+*.webm
+backend/recordings/
+
+# SQLite & Local Test Databases
+*.db
+*.sqlite
+*.sqlite3
 

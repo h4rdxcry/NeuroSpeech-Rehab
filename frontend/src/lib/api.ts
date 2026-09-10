@@ -15,13 +15,28 @@ export function clearTokens() {
 }
 
 export function getWebSocketUrl(sessionId: string): string {
-  const configured = (import.meta.env.VITE_WS_URL as string | undefined)?.replace(/\/$/, "");
-  const proto = typeof window !== "undefined" && window.location.protocol === "https:" ? "wss:" : "ws:";
-  const host = typeof window !== "undefined" ? window.location.host : "localhost:8000";
-  const base = (configured || `${proto}//${host}`).replace(/\/api\/v1$/, "");
   const token = window.localStorage.getItem("access_token");
   if (!token) throw new Error("Please sign in before starting live analysis.");
-  return `${base}/ws/sessions/${encodeURIComponent(sessionId)}?token=${encodeURIComponent(token)}`;
+
+  const configured = (import.meta.env.VITE_WS_URL as string | undefined)?.replace(/\/$/, "");
+  if (configured) {
+    const base = configured.replace(/\/api\/v1$/, "");
+    return `${base}/ws/sessions/${encodeURIComponent(sessionId)}?token=${encodeURIComponent(token)}`;
+  }
+
+  const apiBase = (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/$/, "");
+  if (apiBase) {
+    const base = apiBase.replace(/^http/, "ws").replace(/\/api\/v1$/, "");
+    return `${base}/ws/sessions/${encodeURIComponent(sessionId)}?token=${encodeURIComponent(token)}`;
+  }
+
+  const isBrowser = typeof window !== "undefined";
+  const isHttps = isBrowser && window.location.protocol === "https:";
+  const proto = isHttps ? "wss:" : "ws:";
+  const isLocalhost = isBrowser && (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1");
+  const host = isLocalhost ? "localhost:8000" : (isBrowser ? window.location.host : "localhost:8000");
+
+  return `${proto}//${host}/ws/sessions/${encodeURIComponent(sessionId)}?token=${encodeURIComponent(token)}`;
 }
 
 export class ApiError extends Error {

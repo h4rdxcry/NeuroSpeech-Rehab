@@ -9,7 +9,7 @@ module.exports = {
     'plugin:@typescript-eslint/recommended',
     'plugin:react-hooks/recommended',
   ],
-  ignorePatterns: ['dist/', 'node_modules/', 'playwright-report/', 'test-results/', '*.tsbuildinfo'],
+  ignorePatterns: ['dist/**', 'android/**', 'node_modules/**', 'playwright-report/**', 'test-results/**', '*.tsbuildinfo'],
   overrides: [
     {
       files: ['*.config.*', '.eslintrc.cjs', 'e2e/**/*.ts'],

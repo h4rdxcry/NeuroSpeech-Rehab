@@ -38,6 +38,16 @@ import type {
   SignalQuality,
 } from "../../lib/types";
 
+interface WebSpeechRecognition {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  onresult: ((event: { resultIndex: number; results: Array<Array<{ transcript: string }>> }) => void) | null;
+  onerror: (() => void) | null;
+  start: () => void;
+  stop: () => void;
+}
+
 // Standard Clinical Rehabilitation Phoneme & Word Presets from Google Stitch
 const CLINICAL_TARGET_PRESETS = [
   {
@@ -112,7 +122,7 @@ export default function PatientSession() {
   const [isSimulatingBiofeedback, setIsSimulatingBiofeedback] = useState(false);
   const [displayMode, setDisplayMode] = useState<"camera" | "sample" | "avatar">("camera");
   const avatarCanvasRef = useRef<HTMLCanvasElement>(null);
-  const recognitionRef = useRef<any>(null);
+  const recognitionRef = useRef<WebSpeechRecognition | null>(null);
   const [kinematics, setKinematics] = useState<ArticulatoryKinematics>({
     lipApertureRatio: 0.35,
     mouthWidthRatio: 0.50,
@@ -135,7 +145,9 @@ export default function PatientSession() {
     if (typeof window !== "undefined" && "vibrate" in navigator) {
       try {
         navigator.vibrate(20);
-      } catch {}
+      } catch {
+        /* ignore vibration unsupported */
+      }
     }
   }, []);
 
@@ -334,21 +346,22 @@ export default function PatientSession() {
     ];
 
     let stream: MediaStream | null = null;
-    let lastError: any = null;
+    let lastError: unknown = null;
 
     for (const constraints of constraintTiers) {
       try {
         stream = await navigator.mediaDevices.getUserMedia(constraints);
         if (stream) break;
-      } catch (err: any) {
+      } catch (err) {
         lastError = err;
       }
     }
 
     if (!stream) {
-      if (lastError instanceof DOMException && (lastError.name === "NotAllowedError" || lastError.name === "PermissionDeniedError")) {
+      const errName = (lastError as { name?: string })?.name;
+      if (lastError instanceof DOMException && (errName === "NotAllowedError" || errName === "PermissionDeniedError")) {
         setMediaError("Camera permission was denied in browser settings. You can enable it in site settings or tap '🎬 Test Video' for zero-permission tracking.");
-      } else if (lastError?.name === "NotFoundError" || lastError?.name === "DevicesNotFoundError") {
+      } else if (errName === "NotFoundError" || errName === "DevicesNotFoundError") {
         setMediaError("No camera found on this device. Switching to '🎬 Test Video' mode.");
         setDisplayMode("sample");
       } else {
@@ -399,23 +412,33 @@ export default function PatientSession() {
     if (recognitionRef.current) {
       try {
         recognitionRef.current.stop();
-      } catch {}
+      } catch {
+        /* ignore speech recognition stop failure */
+      }
       recognitionRef.current = null;
     }
   }, []);
 
   const startSpeechRecognition = useCallback((phrase: string) => {
     try {
-      const SpeechRec = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+      const windowWithSpeech = window as unknown as {
+        SpeechRecognition?: new () => WebSpeechRecognition;
+        webkitSpeechRecognition?: new () => WebSpeechRecognition;
+      };
+      const SpeechRec = windowWithSpeech.SpeechRecognition || windowWithSpeech.webkitSpeechRecognition;
       if (!SpeechRec) return;
       if (recognitionRef.current) {
-        try { recognitionRef.current.stop(); } catch {}
+        try {
+          recognitionRef.current.stop();
+        } catch {
+          /* ignore previous stop error */
+        }
       }
       const rec = new SpeechRec();
       rec.continuous = true;
       rec.interimResults = true;
       rec.lang = phrase.includes("வணக்கம்") || phrase.includes("அம்மா") ? "ta-IN" : "en-US";
-      rec.onresult = (event: any) => {
+      rec.onresult = (event: { resultIndex: number; results: Array<Array<{ transcript: string }>> }) => {
         let transcript = "";
         for (let i = event.resultIndex; i < event.results.length; ++i) {
           transcript += event.results[i][0].transcript;
@@ -424,10 +447,14 @@ export default function PatientSession() {
           setRecognizedSpeech(transcript.trim());
         }
       };
-      rec.onerror = () => {};
+      rec.onerror = () => {
+        /* ignore recognition errors */
+      };
       rec.start();
       recognitionRef.current = rec;
-    } catch {}
+    } catch {
+      /* ignore speech recognition initialization failure */
+    }
   }, []);
 
   // 60 FPS 3D Articulatory Avatar & Patient Simulation Loop

@@ -98,7 +98,9 @@ export class FaceMeshTracker {
         opticalAperture = Math.min(0.32, (lumDelta / 70) + speechOsc);
         opticalCornerSpread = Math.min(0.18, video.currentTime > 0 ? (Math.cos(video.currentTime * 4.2) + 1) * 0.07 : 0);
       }
-    } catch {}
+    } catch {
+      /* ignore cross-origin canvas read error */
+    }
 
     // Anatomical facial reference bounding (central lower third of face)
     const mouthCenterX = w * 0.50;
