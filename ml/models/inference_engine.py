@@ -37,6 +37,8 @@ class MultimodalInferenceEngine:
         self.landmark_filter = OneEuroFilter(min_cutoff=1.0, beta=0.007)
         self.baseline_calibrator = PatientBaselineCalibrator()
         self.is_ready = False
+        self.is_trained_checkpoint_loaded = False
+        self.loaded_checkpoints: Dict[str, str] = {}
         self._load_lock = threading.Lock()
 
     @classmethod
@@ -48,8 +50,12 @@ class MultimodalInferenceEngine:
                     cls._instance.initialize()
         return cls._instance
 
-    def initialize(self, weights_path: Optional[str] = None):
-        """Initializes and pre-warms the multimodal model and dual-stream visual speech networks."""
+    def initialize(
+        self,
+        weights_path: Optional[str] = None,
+        visual_speech_weights_path: Optional[str] = None,
+    ):
+        """Initializes, auto-loads trained checkpoints, and pre-warms the neural models."""
         with self._load_lock:
             if self.is_ready:
                 return
@@ -72,16 +78,38 @@ class MultimodalInferenceEngine:
 
             self.beam_decoder = VisemeBeamSearchDecoder(beam_width=8)
 
-            # Load checkpoint if provided and exists
+            # Auto-discover default trained checkpoints if not explicitly provided
+            root = Path(__file__).resolve().parents[2]
+            if weights_path is None:
+                default_mm = root / "ml_training" / "outputs" / "multimodal" / "multimodal_best.pt"
+                if default_mm.exists():
+                    weights_path = str(default_mm)
+
+            if visual_speech_weights_path is None:
+                default_vs = root / "ml_training" / "outputs" / "visual_speech" / "dual_stream_best.pt"
+                if default_vs.exists():
+                    visual_speech_weights_path = str(default_vs)
+
+            # Load Multimodal Fusion weights
             if weights_path and Path(weights_path).exists():
                 try:
                     ckpt = torch.load(weights_path, map_location=self.device)
-                    if isinstance(ckpt, dict) and "model_state_dict" in ckpt:
-                        self.model.load_state_dict(ckpt["model_state_dict"], strict=False)
-                    elif isinstance(ckpt, dict):
-                        self.model.load_state_dict(ckpt, strict=False)
+                    state = ckpt["model_state_dict"] if isinstance(ckpt, dict) and "model_state_dict" in ckpt else ckpt
+                    self.model.load_state_dict(state, strict=False)
+                    self.is_trained_checkpoint_loaded = True
+                    self.loaded_checkpoints["multimodal"] = str(weights_path)
                 except Exception as e:
                     print(f"[Warning] Failed to load multimodal weights from {weights_path}: {e}")
+
+            # Load Dual-Stream Visual Speech weights
+            if visual_speech_weights_path and Path(visual_speech_weights_path).exists():
+                try:
+                    vs_ckpt = torch.load(visual_speech_weights_path, map_location=self.device)
+                    vs_state = vs_ckpt["model_state_dict"] if isinstance(vs_ckpt, dict) and "model_state_dict" in vs_ckpt else vs_ckpt
+                    self.dual_stream_encoder.load_state_dict(vs_state, strict=False)
+                    self.loaded_checkpoints["visual_speech"] = str(visual_speech_weights_path)
+                except Exception as e:
+                    print(f"[Warning] Failed to load visual speech weights from {visual_speech_weights_path}: {e}")
 
             self.model.eval()
             self.dual_stream_encoder.eval()
@@ -284,4 +312,6 @@ class MultimodalInferenceEngine:
             "is_realtime_capable": bool(elapsed_ms < 200.0),
             "device": str(self.device),
             "target_match": target_match_info,
+            "is_trained_checkpoint_loaded": self.is_trained_checkpoint_loaded,
+            "loaded_checkpoints": self.loaded_checkpoints,
         }

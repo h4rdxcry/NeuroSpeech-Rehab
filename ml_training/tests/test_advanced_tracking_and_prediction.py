@@ -2,6 +2,7 @@
 FACS Articulatory Action Unit Extractor, and Language Model-Rescored Beam Search.
 """
 import time
+from pathlib import Path
 import pytest
 import numpy as np
 import torch
@@ -244,3 +245,28 @@ def test_clinical_rehab_service_feedback_incorporates_action_units():
     assert "feedback_cues" in rehab
     assert "calibrated_excursion" in rehab
     assert eval_result["latency_ms"] < 150.0
+
+
+def test_trained_checkpoints_loaded_and_active():
+    """Verifies that MultimodalInferenceEngine automatically loads real-trained weights for multimodal and visual speech."""
+    engine = MultimodalInferenceEngine()
+    engine.initialize()
+
+    assert engine.is_trained_checkpoint_loaded is True, "Expected trained checkpoint to be loaded automatically"
+    assert "multimodal" in engine.loaded_checkpoints
+    assert "visual_speech" in engine.loaded_checkpoints
+    assert Path(engine.loaded_checkpoints["multimodal"]).exists()
+    assert Path(engine.loaded_checkpoints["visual_speech"]).exists()
+
+    # Test prediction with trained weights
+    landmarks_seq = [
+        generate_synthetic_facemesh(lip_aperture=0.30, mouth_width=0.55).tolist()
+        for _ in range(8)
+    ]
+    pred = engine.predict_rehabilitation(
+        landmarks_sequence=landmarks_seq,
+        target_phrase="வணக்கம்",
+    )
+    assert pred["is_trained_checkpoint_loaded"] is True
+    assert pred["latency_ms"] < 150.0
+
