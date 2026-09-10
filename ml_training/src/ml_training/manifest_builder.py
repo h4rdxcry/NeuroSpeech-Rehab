@@ -35,7 +35,7 @@ class SLR127ManifestBuilder:
     
     def __init__(self, database_url: Optional[str] = None):
         self.settings = get_settings()
-        self.database_url = database_url or self.settings.DATABASE_URL
+        self.database_url = database_url or os.environ.get("DATABASE_URL") or self.settings.DATABASE_URL
         self.engine = create_async_engine(self.database_url, echo=False)
         
     async def __aenter__(self):

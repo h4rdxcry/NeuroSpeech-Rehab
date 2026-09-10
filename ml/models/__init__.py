@@ -8,6 +8,11 @@ from ml.models.biosignal_encoders import (
 from ml.models.multimodal_fusion import MultimodalFusionModel
 from ml.models.articulation_scorer import ArticulationScorer
 from ml.models.inference_engine import MultimodalInferenceEngine
+from ml.models.viseme_classifier import (
+    VisemeClass,
+    PhonemeVisemeMapper,
+    TemporalVisemeClassifier,
+)
 
 __all__ = [
     "FacialEMGEncoder",
@@ -17,4 +22,7 @@ __all__ = [
     "MultimodalFusionModel",
     "ArticulationScorer",
     "MultimodalInferenceEngine",
+    "VisemeClass",
+    "PhonemeVisemeMapper",
+    "TemporalVisemeClassifier",
 ]

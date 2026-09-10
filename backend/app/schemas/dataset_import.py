@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import ConfigDict, BaseModel, Field
 from typing import Optional, Dict, Any, List
 from datetime import datetime
 from uuid import UUID
@@ -23,8 +23,7 @@ class DatasetImportLogResponse(BaseModel):
     import_metadata: Optional[Dict[str, Any]] = None
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class DatasetManifest(BaseModel):
@@ -61,8 +60,7 @@ class DatasetManifest(BaseModel):
     importer_version: str = "0.1.0"
     bid_status: Optional[str] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class DatasetImportResponse(BaseModel):

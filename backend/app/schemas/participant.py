@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field, EmailStr
+from pydantic import ConfigDict, BaseModel, Field, EmailStr
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from uuid import UUID
@@ -26,8 +26,7 @@ class PatientResponse(PatientBase):
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 class ResearchParticipantBase(BaseModel):
     pseudonym_id: str = Field(..., min_length=1, max_length=64)
@@ -53,5 +52,4 @@ class ResearchParticipantResponse(ResearchParticipantBase):
     id: UUID
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)

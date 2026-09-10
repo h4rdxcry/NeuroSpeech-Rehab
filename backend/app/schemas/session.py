@@ -46,8 +46,7 @@ class SessionResponse(SessionBase):
     ended_at: Optional[datetime] = None
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 class RecordingBase(BaseModel):
     session_id: UUID
@@ -74,8 +73,7 @@ class RecordingResponse(RecordingBase):
     id: UUID
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 class PredictionBase(BaseModel):
     attempt_id: UUID
@@ -99,5 +97,4 @@ class PredictionResponse(PredictionBase):
     id: UUID
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)

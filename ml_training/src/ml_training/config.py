@@ -1,9 +1,11 @@
 """Configuration for ML training pipeline."""
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from functools import lru_cache
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
     DATABASE_URL: str = "postgresql+asyncpg://neurospeech:neurospeech_dev@localhost:5432/neurospeech"
     
     # Data paths
@@ -16,10 +18,6 @@ class Settings(BaseSettings):
     
     # Tokenizer settings
     VOCAB_PATH: str = "D:/NeuroSpeech-Rehab/ml_training/tokenizer/vocab.json"
-    
-    class Config:
-        env_file = ".env"
-        extra = "ignore"
 
 
 @lru_cache

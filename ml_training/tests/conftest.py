@@ -41,6 +41,19 @@ engine = create_async_engine(TEST_DATABASE_URL, echo=False)
 async_session_factory = async_sessionmaker(engine, expire_on_commit=False)
 
 
+@pytest.fixture(autouse=True)
+def enforce_ml_test_database():
+    """Ensure ML training tests always point to the initialized test_ml.db SQLite database."""
+    from ml_training.config import get_settings
+    old_env = os.environ.get("DATABASE_URL")
+    os.environ["DATABASE_URL"] = TEST_DATABASE_URL
+    get_settings.cache_clear()
+    yield
+    if old_env is not None:
+        os.environ["DATABASE_URL"] = old_env
+    get_settings.cache_clear()
+
+
 @pytest.fixture(scope="session", autouse=True)
 async def setup_test_db():
     """Create test database schema."""

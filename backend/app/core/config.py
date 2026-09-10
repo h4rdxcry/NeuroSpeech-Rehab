@@ -1,8 +1,11 @@
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import model_validator
 from functools import lru_cache
 
+
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
     DATABASE_URL: str = "postgresql+asyncpg://neurospeech:neurospeech_dev@localhost:5432/neurospeech"
     REDIS_URL: str = "redis://localhost:6379/0"
     JWT_SECRET: str = "dev_jwt_secret_change_in_production"
@@ -22,8 +25,6 @@ class Settings(BaseSettings):
                 raise ValueError("Production requires PostgreSQL with asyncpg")
         return self
 
-    class Config:
-        env_file = ".env"
 
 @lru_cache
 def get_settings() -> Settings:

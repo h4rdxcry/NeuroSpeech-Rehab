@@ -24,8 +24,7 @@ class SessionExerciseResponse(SessionExerciseBase):
     id: UUID
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 class AttemptBase(BaseModel):
     session_exercise_id: UUID
@@ -50,5 +49,4 @@ class AttemptResponse(AttemptBase):
     id: UUID
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)

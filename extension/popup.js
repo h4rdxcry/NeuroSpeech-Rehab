@@ -133,7 +133,7 @@ async function stopPracticeRecording() {
 }
 
 function openTherapyPortal() {
-  chrome.tabs.create({ url: "http://127.0.0.1:5174/patient/session" });
+  chrome.tabs.create({ url: "http://127.0.0.1:8000/docs" });
 }
 
 async function openSidePanel() {

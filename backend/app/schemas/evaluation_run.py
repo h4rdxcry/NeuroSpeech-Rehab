@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import ConfigDict, BaseModel, Field
 from typing import Optional, Dict, Any, List
 from datetime import datetime
 from uuid import UUID
@@ -37,5 +37,4 @@ class EvaluationRunResponse(EvaluationRunBase):
     started_at: datetime
     completed_at: Optional[datetime] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
