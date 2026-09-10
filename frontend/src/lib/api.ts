@@ -1,4 +1,21 @@
-function resolveApiBase(): string {
+export function getActiveApiBase(): string {
+  if (typeof window !== "undefined") {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const paramUrl = params.get("apiUrl");
+      if (paramUrl) {
+        window.localStorage.setItem("neurospeech_api_url", paramUrl);
+        return paramUrl.replace(/\/$/, "").replace(/\/api\/v1$/, "");
+      }
+      const stored = window.localStorage.getItem("neurospeech_api_url");
+      if (stored) {
+        return stored.replace(/\/$/, "").replace(/\/api\/v1$/, "");
+      }
+    } catch {
+      /* ignore storage access error */
+    }
+  }
+
   const envUrl = import.meta.env.VITE_API_URL as string | undefined;
   if (envUrl) {
     return envUrl.replace(/\/$/, "").replace(/\/api\/v1$/, "");
@@ -6,7 +23,7 @@ function resolveApiBase(): string {
   return "";
 }
 
-export const API_BASE = resolveApiBase();
+export const API_BASE = getActiveApiBase();
 export const AUTH_EXPIRED_EVENT = "neurospeech-auth-expired";
 
 export function clearTokens() {
@@ -18,16 +35,16 @@ export function getWebSocketUrl(sessionId: string): string {
   const token = window.localStorage.getItem("access_token");
   if (!token) throw new Error("Please sign in before starting live analysis.");
 
-  const configured = (import.meta.env.VITE_WS_URL as string | undefined)?.replace(/\/$/, "");
-  if (configured) {
-    const base = configured.replace(/\/api\/v1$/, "");
+  const configuredWs = (import.meta.env.VITE_WS_URL as string | undefined)?.replace(/\/$/, "");
+  if (configuredWs) {
+    const base = configuredWs.replace(/\/api\/v1$/, "");
     return `${base}/ws/sessions/${encodeURIComponent(sessionId)}?token=${encodeURIComponent(token)}`;
   }
 
-  const apiBase = (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/$/, "");
-  if (apiBase) {
-    const base = apiBase.replace(/^http/, "ws").replace(/\/api\/v1$/, "");
-    return `${base}/ws/sessions/${encodeURIComponent(sessionId)}?token=${encodeURIComponent(token)}`;
+  const activeBase = getActiveApiBase();
+  if (activeBase) {
+    const wsBase = activeBase.replace(/^http/, "ws");
+    return `${wsBase}/ws/sessions/${encodeURIComponent(sessionId)}?token=${encodeURIComponent(token)}`;
   }
 
   const isBrowser = typeof window !== "undefined";
@@ -53,7 +70,8 @@ async function request<T>(path: string, options: { method?: HttpMethod; body?: u
     "bypass-tunnel-reminder": "true",
   };
   if (auth && token) headers.Authorization = `Bearer ${token}`;
-  const response = await fetch(`${API_BASE}${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+  const base = getActiveApiBase();
+  const response = await fetch(`${base}${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
   if (response.status === 401 && auth) {
     // The finalized API has no refresh endpoint. Expiry requires a new login.
     clearTokens();
