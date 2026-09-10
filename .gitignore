@@ -30,6 +30,7 @@ dist/
 frontend/e2e/browser-fixture.json
 frontend/test-results/
 frontend/playwright-report/
+frontend/public/wasm/
 
 # IDE
 .vscode/
