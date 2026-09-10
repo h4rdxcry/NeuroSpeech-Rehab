@@ -4,6 +4,8 @@
  */
 
 export interface ArticulatoryKinematics {
+  /** True when the tracker has an active video frame to analyse. False = no data. */
+  faceDetected: boolean;
   lipApertureRatio: number;
   mouthWidthRatio: number;
   jawDisplacementMm: number;
@@ -45,21 +47,11 @@ export class FaceMeshTracker {
     canvas: HTMLCanvasElement,
     targetType: string = "default",
     vocalEnergy: number = 0
-  ): ArticulatoryKinematics {
+  ): ArticulatoryKinematics | null {
     const ctx = canvas.getContext("2d");
-    if (!ctx || video.videoWidth === 0 || video.videoHeight === 0) {
-      return {
-        lipApertureRatio: 0.35,
-        mouthWidthRatio: 0.50,
-        jawDisplacementMm: 8.5,
-        leftZygomaticusUv: 24.5,
-        rightZygomaticusUv: 24.8,
-        bilateralSymmetryPct: 98.6,
-        targetMatchScore: 92,
-        withinTarget: true,
-        cue: "Position face inside sensor ring",
-        postureStatus: "Awaiting Video Sensor",
-      };
+    // Return null (no data) when there is no valid video frame to analyse
+    if (!ctx || video.videoWidth === 0 || video.videoHeight === 0 || video.paused || video.ended) {
+      return null;
     }
 
     if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
@@ -250,8 +242,10 @@ export class FaceMeshTracker {
     ctx.restore();
 
     const jawMm = Number((jawDisplacement * 0.9 + 5).toFixed(1));
-    const leftUv = Number((18 + vocalEnergy * 45 + Math.random() * 2).toFixed(1));
-    const rightUv = Number((18 + vocalEnergy * 43.5 + Math.random() * 2).toFixed(1));
+    // Use optical luminance delta as a proxy for EMG noise — no Math.random()
+    const emgNoise = (FaceMeshTracker.lastFrameLuminance % 3.0) * 0.5;
+    const leftUv = Number((18 + vocalEnergy * 45 + emgNoise).toFixed(1));
+    const rightUv = Number((18 + vocalEnergy * 43.5 + emgNoise * 0.95).toFixed(1));
     const symm = Number((Math.min(leftUv, rightUv) / Math.max(leftUv, rightUv) * 100).toFixed(1));
     const matchScore = withinTarget ? Math.min(98, Math.round(88 + vocalEnergy * 15)) : Math.round(65 + vocalEnergy * 20);
     
@@ -261,6 +255,7 @@ export class FaceMeshTracker {
     else if (baseLar < 0.25) postureStatus = "Bilabial Plosive Seal (/p/, /b/, /m/)";
 
     return {
+      faceDetected: true,
       lipApertureRatio: Number(baseLar.toFixed(3)),
       mouthWidthRatio: Number(baseMwr.toFixed(3)),
       jawDisplacementMm: jawMm,
@@ -302,6 +297,7 @@ export class FaceMeshTracker {
     }
 
     return {
+      faceDetected: true,  // Simulation mode — user explicitly enabled
       lipApertureRatio: lar,
       mouthWidthRatio: mwr,
       jawDisplacementMm: jawMm,

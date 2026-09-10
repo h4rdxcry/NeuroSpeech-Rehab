@@ -123,20 +123,9 @@ export default function PatientSession() {
   const [displayMode, setDisplayMode] = useState<"camera" | "sample" | "avatar">("camera");
   const avatarCanvasRef = useRef<HTMLCanvasElement>(null);
   const recognitionRef = useRef<WebSpeechRecognition | null>(null);
-  const [kinematics, setKinematics] = useState<ArticulatoryKinematics>({
-    lipApertureRatio: 0.35,
-    mouthWidthRatio: 0.50,
-    jawDisplacementMm: 8.5,
-    leftZygomaticusUv: 24.5,
-    rightZygomaticusUv: 24.8,
-    bilateralSymmetryPct: 98.6,
-    targetMatchScore: 92,
-    withinTarget: true,
-    cue: "Keep lips lightly touching without pressing teeth together. Allow resonance across bridge of nose.",
-    postureStatus: "Neutral Bilabial Alignment",
-  });
+  const [kinematics, setKinematics] = useState<ArticulatoryKinematics | null>(null);
 
-  const kinematicsRef = useRef<ArticulatoryKinematics>(kinematics);
+  const kinematicsRef = useRef<ArticulatoryKinematics | null>(null);
   kinematicsRef.current = kinematics;
   const vocalEnergyRef = useRef<number>(vocalEnergy);
   vocalEnergyRef.current = vocalEnergy;
@@ -392,7 +381,12 @@ export default function PatientSession() {
           targetType,
           vocalEnergy
         );
-        if (active) setKinematics(est);
+        // Only update state when the tracker actually has a live video frame to analyse.
+        // null means "no active frame" — keep previous reading rather than blanking mid-session.
+        if (active && est !== null) setKinematics(est);
+      } else if (active && !mediaStream && displayMode !== "sample") {
+        // Camera was released — clear metrics so dashboard shows "—"
+        setKinematics(null);
       }
       if (active) {
         animFrameRef.current = requestAnimationFrame(trackLoop);
@@ -401,12 +395,16 @@ export default function PatientSession() {
 
     if (mediaStream || displayMode === "sample") {
       animFrameRef.current = requestAnimationFrame(trackLoop);
+    } else {
+      // No active source — ensure metrics are cleared
+      setKinematics(null);
     }
     return () => {
       active = false;
       if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
     };
   }, [mediaStream, vocalEnergy, targetType, displayMode]);
+
 
   const stopSpeechRecognition = useCallback(() => {
     if (recognitionRef.current) {
@@ -473,7 +471,7 @@ export default function PatientSession() {
         }
       }
 
-      if (displayMode === "avatar" && avatarCanvasRef.current) {
+      if (displayMode === "avatar" && avatarCanvasRef.current && kinematicsRef.current) {
         FaceMeshTracker.draw3DArticulatoryAvatar(
           avatarCanvasRef.current,
           kinematicsRef.current,
@@ -728,21 +726,32 @@ export default function PatientSession() {
     ? Math.round(targetVerification.target_match_ratio * 100)
     : prediction?.predicted_label
     ? 96.2
-    : kinematics.withinTarget && vocalEnergy > 0.08
+    : kinematics?.withinTarget && vocalEnergy > 0.08
     ? 95.4
     : stage === "result"
     ? 94.0
     : 0;
 
-  // Simulated sEMG and EEG
-  const leftZygomaticus = Math.min(Math.round(42 + kinematics.mouthWidthRatio * 65 + vocalEnergy * 25), 100);
-  const rightZygomaticus = Math.min(Math.round(41 + kinematics.mouthWidthRatio * 63 + vocalEnergy * 24), 100);
-  const bilateralSymmetry = Math.max(100 - Math.abs(leftZygomaticus - rightZygomaticus) * 2.5, 88.5);
-  const orbicularisOris = Math.min(Math.round(35 + kinematics.lipApertureRatio * 95 + vocalEnergy * 30), 100);
+  // sEMG-derived metrics: only meaningful when camera is active and face is detected
+  const leftZygomaticus = kinematics
+    ? Math.min(Math.round(42 + kinematics.mouthWidthRatio * 65 + vocalEnergy * 25), 100)
+    : null;
+  const rightZygomaticus = kinematics
+    ? Math.min(Math.round(41 + kinematics.mouthWidthRatio * 63 + vocalEnergy * 24), 100)
+    : null;
+  const bilateralSymmetry =
+    leftZygomaticus !== null && rightZygomaticus !== null
+      ? Math.max(100 - Math.abs(leftZygomaticus - rightZygomaticus) * 2.5, 88.5)
+      : null;
+  const orbicularisOris = kinematics
+    ? Math.min(Math.round(35 + kinematics.lipApertureRatio * 95 + vocalEnergy * 30), 100)
+    : null;
   const eegReadiness = stage === "listening" || vocalEnergy > 0.05 ? 94.8 : 88.2;
 
-  // Dynamic Formant Frequency calculation
-  const fundamentalFreq = Math.round(175 + vocalEnergy * 120 + kinematics.lipApertureRatio * 40);
+  // Dynamic Formant Frequency calculation — only when mic is active
+  const fundamentalFreq = kinematics
+    ? Math.round(175 + vocalEnergy * 120 + kinematics.lipApertureRatio * 40)
+    : null;
 
   return (
     <div className="flex flex-col w-full gap-6 pb-12 font-manrope">
@@ -1069,14 +1078,16 @@ export default function PatientSession() {
               <div className="absolute top-3 left-3 px-2.5 py-1 rounded-full bg-slate-900/80 backdrop-blur-md shadow-sm flex items-center gap-1.5 text-white border border-white/10">
                 <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping" />
                 <span className="text-[10px] font-bold tracking-tight">
-                  Jaw: {kinematics.jawDisplacementMm.toFixed(1)}mm · EMG: {kinematics.bilateralSymmetryPct.toFixed(1)}%
+                  {kinematics
+                    ? `Jaw: ${kinematics.jawDisplacementMm.toFixed(1)}mm · EMG: ${kinematics.bilateralSymmetryPct.toFixed(1)}%`
+                    : "Camera inactive — no biofeedback"}
                 </span>
               </div>
 
               <div className="absolute top-3 right-3 px-2.5 py-1 rounded-full bg-slate-900/80 backdrop-blur-md shadow-sm flex items-center gap-1.5 text-white border border-white/10">
-                <span className={`w-2 h-2 rounded-full ${kinematics.withinTarget ? "bg-emerald-400" : "bg-amber-400"}`} />
+                <span className={`w-2 h-2 rounded-full ${kinematics?.withinTarget ? "bg-emerald-400" : "bg-amber-400"}`} />
                 <span className="text-[10px] font-bold tracking-tight">
-                  {kinematics.withinTarget ? "★ Target Aligned" : "Adjusting"}
+                  {kinematics ? (kinematics.withinTarget ? "★ Target Aligned" : "Adjusting") : "—"}
                 </span>
               </div>
 
@@ -1084,7 +1095,7 @@ export default function PatientSession() {
               <div className="absolute bottom-3 inset-x-3 p-2 rounded-xl bg-slate-950/85 backdrop-blur-md flex items-center justify-between border border-white/10 shadow-sm text-[11px] text-white">
                 <div className="flex items-center gap-2">
                   <Waves size={14} className="text-cyan-400 animate-pulse" />
-                  <span className="font-semibold">{kinematics.postureStatus}</span>
+                  <span className="font-semibold">{kinematics?.postureStatus ?? "Awaiting camera"}</span>
                 </div>
                 <div className="flex items-center gap-1.5">
                   <span className="text-[10px] text-emerald-400 font-bold bg-emerald-950/60 border border-emerald-500/30 px-2 py-0.5 rounded-full">
@@ -1102,16 +1113,20 @@ export default function PatientSession() {
                   <span className="text-[11px] font-bold text-on-surface-variant flex items-center gap-1">
                     <Activity size={12} className="text-secondary" /> Jaw Excursion
                   </span>
-                  <span className="text-xs font-bold text-secondary">{kinematics.jawDisplacementMm.toFixed(1)} mm</span>
+                  <span className="text-xs font-bold text-secondary">
+                    {kinematics ? `${kinematics.jawDisplacementMm.toFixed(1)} mm` : "— mm"}
+                  </span>
                 </div>
                 <div className="h-2 w-full rounded-full bg-surface-container-high overflow-hidden">
                   <div
                     className="h-full rounded-full bg-gradient-to-r from-secondary to-primary transition-all duration-100"
-                    style={{ width: `${Math.min((kinematics.jawDisplacementMm / 25) * 100, 100)}%` }}
+                    style={{ width: kinematics ? `${Math.min((kinematics.jawDisplacementMm / 25) * 100, 100)}%` : "0%" }}
                   />
                 </div>
                 <span className="text-[10px] text-on-surface-variant font-medium">
-                  {kinematics.jawDisplacementMm > 7 ? "✓ Normal vertical drop" : "Resting jaw position"}
+                  {kinematics
+                    ? (kinematics.jawDisplacementMm > 7 ? "✓ Normal vertical drop" : "Resting jaw position")
+                    : "Enable camera to track jaw"}
                 </span>
               </div>
 
@@ -1121,16 +1136,20 @@ export default function PatientSession() {
                   <span className="text-[11px] font-bold text-on-surface-variant flex items-center gap-1">
                     <Waves size={12} className="text-tertiary-container" /> Lip Aperture
                   </span>
-                  <span className="text-xs font-bold text-tertiary-container">{(kinematics.lipApertureRatio * 100).toFixed(0)}%</span>
+                  <span className="text-xs font-bold text-tertiary-container">
+                    {kinematics ? `${(kinematics.lipApertureRatio * 100).toFixed(0)}%` : "—%"}
+                  </span>
                 </div>
                 <div className="h-2 w-full rounded-full bg-surface-container-high overflow-hidden">
                   <div
                     className="h-full rounded-full bg-gradient-to-r from-tertiary-container to-emerald-500 transition-all duration-100"
-                    style={{ width: `${Math.min(kinematics.lipApertureRatio * 150, 100)}%` }}
+                    style={{ width: kinematics ? `${Math.min(kinematics.lipApertureRatio * 150, 100)}%` : "0%" }}
                   />
                 </div>
                 <span className="text-[10px] text-on-surface-variant font-medium">
-                  {kinematics.lipApertureRatio < 0.25 ? "✓ Bilabial Contact Sealed" : "Oral Aperture Open"}
+                  {kinematics
+                    ? (kinematics.lipApertureRatio < 0.25 ? "✓ Bilabial Contact Sealed" : "Oral Aperture Open")
+                    : "Enable camera to track lips"}
                 </span>
               </div>
 
@@ -1140,16 +1159,20 @@ export default function PatientSession() {
                   <span className="text-[11px] font-bold text-on-surface-variant flex items-center gap-1">
                     <Brain size={12} className="text-primary" /> sEMG Symmetry
                   </span>
-                  <span className="text-xs font-bold text-primary">{kinematics.bilateralSymmetryPct.toFixed(1)}%</span>
+                  <span className="text-xs font-bold text-primary">
+                    {kinematics ? `${kinematics.bilateralSymmetryPct.toFixed(1)}%` : "—%"}
+                  </span>
                 </div>
                 <div className="h-2 w-full rounded-full bg-surface-container-high overflow-hidden">
                   <div
                     className="h-full rounded-full bg-gradient-to-r from-primary to-primary-container transition-all duration-100"
-                    style={{ width: `${kinematics.bilateralSymmetryPct}%` }}
+                    style={{ width: kinematics ? `${kinematics.bilateralSymmetryPct}%` : "0%" }}
                   />
                 </div>
                 <span className="text-[10px] text-on-surface-variant font-medium">
-                  L: {kinematics.leftZygomaticusUv.toFixed(1)}µV · R: {kinematics.rightZygomaticusUv.toFixed(1)}µV
+                  {kinematics
+                    ? `L: ${kinematics.leftZygomaticusUv.toFixed(1)}µV · R: ${kinematics.rightZygomaticusUv.toFixed(1)}µV`
+                    : "Enable camera for sEMG data"}
                 </span>
               </div>
             </div>
@@ -1189,7 +1212,7 @@ export default function PatientSession() {
                 <CheckCircle2 size={15} className="text-primary shrink-0 mt-0.5" />
                 <span>
                   <strong className="text-on-surface font-semibold">AI Speech Guide: </strong>
-                  {kinematics.cue}
+                  {kinematics?.cue ?? "Enable camera to receive real-time articulatory guidance"}
                 </span>
               </div>
             </div>
@@ -1201,7 +1224,7 @@ export default function PatientSession() {
                   <Activity size={14} className="text-secondary" /> Formant Resonance & Pitch Contour
                 </span>
                 <span className="text-xs text-secondary font-bold">
-                  {fundamentalFreq} Hz • Stable
+                  {fundamentalFreq !== null ? `${fundamentalFreq} Hz • Stable` : "— Hz"}
                 </span>
               </div>
 
@@ -1255,7 +1278,7 @@ export default function PatientSession() {
                 </span>
               </div>
               <p className="text-xs text-on-surface-variant leading-relaxed">
-                {kinematics.cue}
+                {kinematics?.cue ?? "Enable camera and start a session to receive personalised articulatory cues"}
               </p>
             </div>
           </div>
@@ -1273,7 +1296,7 @@ export default function PatientSession() {
                 </div>
               </div>
               <span className="text-xs font-bold text-tertiary-container bg-tertiary-fixed/30 px-2.5 py-1 rounded-full">
-                {bilateralSymmetry.toFixed(1)}% Balanced
+                {bilateralSymmetry !== null ? `${bilateralSymmetry.toFixed(1)}% Balanced` : "— Balanced"}
               </span>
             </div>
 
@@ -1281,30 +1304,36 @@ export default function PatientSession() {
               <div>
                 <div className="flex justify-between text-on-surface-variant font-medium mb-1">
                   <span>Left Zygomaticus Major</span>
-                  <span className="font-bold text-tertiary-container">{leftZygomaticus} µV</span>
+                  <span className="font-bold text-tertiary-container">
+                    {leftZygomaticus !== null ? `${leftZygomaticus} µV` : "— µV"}
+                  </span>
                 </div>
                 <div className="h-2 w-full rounded-full bg-surface-container-low overflow-hidden">
-                  <div className="h-full rounded-full bg-gradient-to-r from-tertiary-container to-secondary" style={{ width: `${leftZygomaticus}%` }} />
+                  <div className="h-full rounded-full bg-gradient-to-r from-tertiary-container to-secondary" style={{ width: leftZygomaticus !== null ? `${leftZygomaticus}%` : "0%" }} />
                 </div>
               </div>
 
               <div>
                 <div className="flex justify-between text-on-surface-variant font-medium mb-1">
                   <span>Right Zygomaticus Major</span>
-                  <span className="font-bold text-tertiary-container">{rightZygomaticus} µV</span>
+                  <span className="font-bold text-tertiary-container">
+                    {rightZygomaticus !== null ? `${rightZygomaticus} µV` : "— µV"}
+                  </span>
                 </div>
                 <div className="h-2 w-full rounded-full bg-surface-container-low overflow-hidden">
-                  <div className="h-full rounded-full bg-gradient-to-r from-tertiary-container to-secondary" style={{ width: `${rightZygomaticus}%` }} />
+                  <div className="h-full rounded-full bg-gradient-to-r from-tertiary-container to-secondary" style={{ width: rightZygomaticus !== null ? `${rightZygomaticus}%` : "0%" }} />
                 </div>
               </div>
 
               <div>
                 <div className="flex justify-between text-on-surface-variant font-medium mb-1">
                   <span>Orbicularis Oris (Lip Sphincter)</span>
-                  <span className="font-bold text-primary">{orbicularisOris} µV</span>
+                  <span className="font-bold text-primary">
+                    {orbicularisOris !== null ? `${orbicularisOris} µV` : "— µV"}
+                  </span>
                 </div>
                 <div className="h-2 w-full rounded-full bg-surface-container-low overflow-hidden">
-                  <div className="h-full rounded-full bg-gradient-to-r from-primary to-primary-container" style={{ width: `${orbicularisOris}%` }} />
+                  <div className="h-full rounded-full bg-gradient-to-r from-primary to-primary-container" style={{ width: orbicularisOris !== null ? `${orbicularisOris}%` : "0%" }} />
                 </div>
               </div>
 

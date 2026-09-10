@@ -6,7 +6,7 @@ interface RehabGameProps {
   targetPhrase: string;
   isRecording: boolean;
   vocalEnergy: number;
-  kinematics: ArticulatoryKinematics;
+  kinematics: ArticulatoryKinematics | null;
   masteryPercentage?: number;
   onAttemptComplete?: () => void;
 }
@@ -42,11 +42,11 @@ export default function RehabGame({
       setAvatarY((prev) => prev * 0.85 + targetAltitude * 0.15);
       setDistanceTraveled((prev) => prev + 0.4);
 
-      if (kinematics.withinTarget && vocalEnergy > 0.15) {
+      if (kinematics?.withinTarget && vocalEnergy > 0.15) {
         setStarsCollected((prev) => Math.min(prev + 0.05, 3));
         setCheerMessage("Wonderful lip positioning & clear vocal tone!");
       } else if (vocalEnergy > 0.1) {
-        setCheerMessage(kinematics.cue);
+        setCheerMessage(kinematics?.cue ?? "Keep speaking clearly");
       }
     }
   }, [isRecording, vocalEnergy, kinematics]);
@@ -85,7 +85,7 @@ export default function RehabGame({
     // 3. Floating Therapeutic Checkpoint Rings
     const ringX = ((w * 0.75 - (distanceTraveled * 15)) % (w * 0.9)) + (w * 0.1);
     const ringY = h * 0.50;
-    ctx.strokeStyle = kinematics.withinTarget ? "rgba(52, 211, 153, 0.85)" : "rgba(167, 139, 250, 0.5)";
+    ctx.strokeStyle = kinematics?.withinTarget ? "rgba(52, 211, 153, 0.85)" : "rgba(167, 139, 250, 0.5)";
     ctx.lineWidth = 4;
     ctx.setLineDash([8, 6]);
     ctx.beginPath();
@@ -99,7 +99,7 @@ export default function RehabGame({
 
     // Glowing aura
     const aura = ctx.createRadialGradient(avatarPxX, avatarPxY, 4, avatarPxX, avatarPxY, 36);
-    aura.addColorStop(0, kinematics.withinTarget ? "rgba(52, 211, 153, 0.9)" : "rgba(129, 140, 248, 0.8)");
+    aura.addColorStop(0, kinematics?.withinTarget ? "rgba(52, 211, 153, 0.9)" : "rgba(129, 140, 248, 0.8)");
     aura.addColorStop(1, "rgba(99, 102, 241, 0)");
     ctx.fillStyle = aura;
     ctx.beginPath();
@@ -107,7 +107,7 @@ export default function RehabGame({
     ctx.fill();
 
     // Avatar orb core
-    ctx.fillStyle = kinematics.withinTarget ? "#10b981" : "#6366f1";
+    ctx.fillStyle = kinematics?.withinTarget ? "#10b981" : "#6366f1";
     ctx.beginPath();
     ctx.arc(avatarPxX, avatarPxY, 14, 0, 2 * Math.PI);
     ctx.fill();
@@ -116,7 +116,7 @@ export default function RehabGame({
     ctx.beginPath();
     ctx.arc(avatarPxX - 3, avatarPxY - 3, 4, 0, 2 * Math.PI);
     ctx.fill();
-  }, [avatarY, distanceTraveled, kinematics.withinTarget]);
+  }, [avatarY, distanceTraveled, kinematics?.withinTarget]);
 
   const earnedStarCount = Math.floor(starsCollected);
 
@@ -221,9 +221,9 @@ export default function RehabGame({
             <span>{cheerMessage}</span>
           </div>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, borderRadius: 10, background: kinematics.withinTarget ? 'rgba(0,118,80,0.85)' : 'rgba(11,28,48,0.80)', padding: '5px 10px', border: `1px solid ${kinematics.withinTarget ? 'rgba(111,251,190,0.4)' : 'rgba(255,255,255,0.08)'}`, fontSize: '0.72rem', fontWeight: 700, color: kinematics.withinTarget ? '#6ffbbe' : '#adb8cc', backdropFilter: 'blur(8px)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, borderRadius: 10, background: kinematics?.withinTarget ? 'rgba(0,118,80,0.85)' : 'rgba(11,28,48,0.80)', padding: '5px 10px', border: `1px solid ${kinematics?.withinTarget ? 'rgba(111,251,190,0.4)' : 'rgba(255,255,255,0.08)'}`, fontSize: '0.72rem', fontWeight: 700, color: kinematics?.withinTarget ? '#6ffbbe' : '#adb8cc', backdropFilter: 'blur(8px)' }}>
             <ShieldCheck style={{ width: 13, height: 13 }} />
-            <span>{kinematics.withinTarget ? "Target Match ✓" : "Adjusting…"}</span>
+            <span>{kinematics?.withinTarget ? "Target Match ✓" : "Adjusting…"}</span>
           </div>
         </div>
 
