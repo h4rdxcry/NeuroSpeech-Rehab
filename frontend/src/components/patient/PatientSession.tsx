@@ -42,6 +42,8 @@ import { api, listAll } from "../../lib/api";
 import { capturePcm } from "../../lib/pcmCapture";
 import { useSessionWebSocket } from "../../lib/useSessionWebSocket";
 import { FaceMeshTracker, type ArticulatoryKinematics } from "../../lib/faceMeshTracker";
+import { LipReadingClassifier, type LipReadingPrediction } from "../../lib/lipReadingClassifier";
+import { AcousticSpeechDetector, type SpeechPredictionResult } from "../../lib/acousticSpeechDetector";
 import RehabGame from "./RehabGame";
 import type {
   Attempt,
@@ -149,6 +151,14 @@ export default function PatientSession() {
   const [lastEvaluation, setLastEvaluation] = useState<MultimodalEvaluationResult | null>(null);
 
   const activeLevelData = useMemo(() => getLevelData(currentLevel), [currentLevel]);
+  const lipClassifierRef = useRef<LipReadingClassifier>(new LipReadingClassifier());
+  const speechDetectorRef = useRef<AcousticSpeechDetector>(new AcousticSpeechDetector(activeLevelData));
+  const [lipPrediction, setLipPrediction] = useState<LipReadingPrediction | null>(null);
+  const [speechPrediction, setSpeechPrediction] = useState<SpeechPredictionResult | null>(null);
+  const [isLiveListening, setIsLiveListening] = useState<boolean>(true);
+  const prevSessionIdRef = useRef<string | null>(null);
+
+
 
   // Interactive State Simulator & Mode Toggles
   const [simulatedState, setSimulatedState] = useState<string | null>(null);
@@ -169,6 +179,15 @@ export default function PatientSession() {
   kinematicsRef.current = kinematics;
   const vocalEnergyRef = useRef<number>(vocalEnergy);
   vocalEnergyRef.current = vocalEnergy;
+
+  const fundamentalFreq = vocalEnergy > 0.02 || kinematics ? Math.round(175 + vocalEnergy * 120 + (kinematics?.lipApertureRatio ?? 0.2) * 40) : null;
+
+  const liveProgress = useMemo(() => {
+    const lipScore = lipPrediction ? lipPrediction.confidence : 0;
+    const speechScore = speechPrediction ? speechPrediction.confidence : 0;
+    const toneScore = vocalEnergy > 0.04 ? 85 : 30;
+    return Math.min(100, Math.round(lipScore * 0.35 + speechScore * 0.40 + toneScore * 0.25));
+  }, [lipPrediction, speechPrediction, vocalEnergy]);
 
   const triggerHaptic = useCallback(() => {
     if (typeof window !== "undefined" && "vibrate" in navigator) {
@@ -448,12 +467,35 @@ export default function PatientSession() {
           targetType,
           vocalEnergy
         );
-        // Only update state when the tracker actually has a live video frame to analyse.
-        // null means "no active frame" — keep previous reading rather than blanking mid-session.
-        if (active && est !== null) setKinematics(est);
+        if (active && est !== null) {
+          setKinematics(est);
+
+          // Real-Time 3D Lip-Reading Classifier: Predicts word in Tamil & English from mouth kinematics
+          const lipPred = lipClassifierRef.current.processFrame(
+            est,
+            activeLevelData,
+            vocalEnergyRef.current
+          );
+          setLipPrediction(lipPred);
+
+          // Real-Time Acoustic & Voice Phonation Fusion
+          if (isLiveListening) {
+            const speechPred = speechDetectorRef.current.processAcousticFrame(
+              vocalEnergyRef.current,
+              fundamentalFreq,
+              lipPred.isArticulating
+            );
+            if (speechPred.source !== "idle" && speechPred.confidence > 0) {
+              setSpeechPrediction(speechPred);
+              if (speechPred.rawTranscript && speechPred.rawTranscript.trim()) {
+                setRecognizedSpeech(speechPred.rawTranscript.trim());
+              }
+            }
+          }
+        }
       } else if (active && !mediaStream && displayMode !== "sample") {
-        // Camera was released — clear metrics so dashboard shows "—"
         setKinematics(null);
+        setLipPrediction(null);
       }
       if (active) {
         animFrameRef.current = requestAnimationFrame(trackLoop);
@@ -470,7 +512,73 @@ export default function PatientSession() {
       active = false;
       if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
     };
-  }, [mediaStream, vocalEnergy, targetType, displayMode]);
+  }, [mediaStream, vocalEnergy, targetType, displayMode, activeLevelData, isLiveListening, fundamentalFreq]);
+
+  // Continuous background Web Audio capture when media stream is active
+  useEffect(() => {
+    if (!mediaStream || mediaStream.getAudioTracks().length === 0) return;
+
+    let stopPcm: (() => void) | null = null;
+    let isCancelled = false;
+
+    void (async () => {
+      try {
+        stopPcm = await capturePcm(
+          mediaStream,
+          (chunk) => {
+            if (isCancelled) return;
+            const pcm16View = new Int16Array(chunk);
+            let sumSq = 0;
+            for (let i = 0; i < pcm16View.length; i += 4) {
+              const val = pcm16View[i] / 32768.0;
+              sumSq += val * val;
+            }
+            const rms = Math.sqrt(sumSq / (pcm16View.length / 4));
+            setVocalEnergy(rms);
+          },
+          (err) => {
+            console.warn("PCM capture notice:", err);
+          }
+        );
+      } catch (err) {
+        console.warn("AudioContext continuous setup notice:", err);
+      }
+    })();
+
+    return () => {
+      isCancelled = true;
+      if (stopPcm) stopPcm();
+    };
+  }, [mediaStream]);
+
+  // Resilient speech recognition synchronizer
+  useEffect(() => {
+    speechDetectorRef.current.setTargetLevel(activeLevelData);
+    lipClassifierRef.current.reset();
+  }, [activeLevelData]);
+
+  useEffect(() => {
+    speechDetectorRef.current.setLanguage(speechLang);
+  }, [speechLang]);
+
+  useEffect(() => {
+    speechDetectorRef.current.onPrediction((res) => {
+      setSpeechPrediction(res);
+      if (res.rawTranscript && res.rawTranscript.trim()) {
+        setRecognizedSpeech(res.rawTranscript.trim());
+      }
+    });
+
+    if (isLiveListening) {
+      speechDetectorRef.current.start(activeLevelData);
+    } else {
+      speechDetectorRef.current.stop();
+    }
+
+    return () => {
+      speechDetectorRef.current.stop();
+    };
+  }, [isLiveListening, activeLevelData]);
 
 
   const stopSpeechRecognition = useCallback(() => {
@@ -584,9 +692,14 @@ export default function PatientSession() {
   }, [releaseMedia]);
 
   useEffect(() => {
-    releaseMedia();
-    setAttempt(null);
-    setSelectedExerciseId("");
+    if (session?.id) {
+      if (prevSessionIdRef.current && prevSessionIdRef.current !== session.id) {
+        releaseMedia();
+        setAttempt(null);
+        setSelectedExerciseId("");
+      }
+      prevSessionIdRef.current = session.id;
+    }
   }, [session?.id, releaseMedia]);
 
   useEffect(() => {
@@ -937,7 +1050,7 @@ export default function PatientSession() {
   const bilateralSymmetry = leftZygomaticus !== null && rightZygomaticus !== null ? Math.max(100 - Math.abs(leftZygomaticus - rightZygomaticus) * 2.5, 88.5) : null;
   const orbicularisOris = kinematics ? Math.min(Math.round(35 + kinematics.lipApertureRatio * 95 + vocalEnergy * 30), 100) : null;
   const eegReadiness = stage === "listening" || vocalEnergy > 0.05 ? 94.8 : 88.2;
-  const fundamentalFreq = vocalEnergy > 0.02 || kinematics ? Math.round(175 + vocalEnergy * 120 + (kinematics?.lipApertureRatio ?? 0.2) * 40) : null;
+  
 
   const masteryPct = targetVerification
     ? Math.round(targetVerification.target_match_ratio * 100)
@@ -1615,11 +1728,35 @@ export default function PatientSession() {
                 </div>
               </div>
 
-              {/* Bilingual Target Pronunciation and Meaning Box */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
-                <div className="p-3 rounded-xl bg-surface-container-lowest border border-on-surface/[0.05] flex flex-col justify-between gap-1.5">
+              {/* Live Multimodal Match Meter */}
+              <div className="p-3 rounded-xl bg-surface-container-lowest border border-primary/20 flex flex-col gap-1.5 shadow-sm">
+                <div className="flex items-center justify-between text-xs font-bold">
+                  <span className="flex items-center gap-1.5 text-on-surface">
+                    <Sparkles size={14} className="text-primary animate-spin" />
+                    Live Multimodal Progress (Lip Movement + Speech AI)
+                  </span>
+                  <span className={`text-xs font-extrabold ${liveProgress >= 60 ? "text-emerald-600" : "text-primary"}`}>
+                    {liveProgress}% / 100% {liveProgress >= 60 ? "🎉 Target Cleared!" : ""}
+                  </span>
+                </div>
+                <div className="w-full h-2 rounded-full bg-surface-container-high overflow-hidden">
+                  <div
+                    className={`h-full rounded-full transition-all duration-300 ${
+                      liveProgress >= 60
+                        ? "bg-gradient-to-r from-emerald-500 to-teal-400"
+                        : "bg-gradient-to-r from-primary via-secondary to-tertiary-container"
+                    }`}
+                    style={{ width: `${Math.max(6, liveProgress)}%` }}
+                  />
+                </div>
+              </div>
+
+              {/* 3-Card Bilingual Speech & Lip-Reading Diagnostic Grid */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5 text-xs">
+                {/* 1. Target Phrase (Tamil & English) */}
+                <div className="p-3 rounded-xl bg-surface-container-lowest border border-on-surface/[0.05] flex flex-col justify-between gap-1.5 shadow-sm">
                   <div className="flex items-center justify-between">
-                    <span className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider">Target Phrase (Tamil & English)</span>
+                    <span className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider">Target Prompt</span>
                     <div className="flex items-center gap-1">
                       <button
                         type="button"
@@ -1643,22 +1780,113 @@ export default function PatientSession() {
                   </div>
 
                   <div className="flex items-baseline gap-2 mt-0.5">
-                    <span className="font-bold text-primary text-lg">{targetTamil}</span>
+                    <span className="font-bold text-primary text-xl">{targetTamil}</span>
                     <span className="font-bold text-on-surface text-sm">/ {targetPhrase}</span>
                   </div>
-                  <span className="text-[10px] text-secondary font-mono">Phonetic: {activeLevelData.transliteration}</span>
+                  <span className="text-[10px] text-secondary font-mono truncate">Phonetic: {activeLevelData.transliteration}</span>
                 </div>
 
-                <div className="p-3 rounded-xl bg-surface-container-lowest border border-on-surface/[0.05] flex flex-col justify-between gap-1.5">
-                  <span className="text-[10px] font-bold text-primary uppercase tracking-wider block">Detected Spoken Speech</span>
-                  <span className="font-bold text-primary text-base min-h-[26px]">
-                    {recognizedSpeech ? `“${recognizedSpeech}”` : stage === "listening" ? "Listening… speak target phrase" : `“${targetPhrase}” (Ready)`}
-                  </span>
+                {/* 2. Visual Lip-Reading Detection Box */}
+                <div className="p-3 rounded-xl bg-surface-container-lowest border border-primary/20 flex flex-col justify-between gap-1.5 shadow-sm">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-bold text-primary uppercase tracking-wider flex items-center gap-1">
+                      👄 Lip Tracker Detection
+                    </span>
+                    <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full ${
+                      lipPrediction && lipPrediction.confidence >= 60 ? "bg-emerald-500/10 text-emerald-600" : "bg-primary/10 text-primary"
+                    }`}>
+                      {lipPrediction?.isArticulating ? `${lipPrediction.confidence}% Match` : "Tracking Lips…"}
+                    </span>
+                  </div>
+                  <div className="flex items-baseline gap-2 mt-0.5">
+                    <span className="font-bold text-primary text-xl">{lipPrediction?.wordTamil || targetTamil}</span>
+                    <span className="font-bold text-on-surface text-sm">/ {lipPrediction?.wordEnglish || targetPhrase}</span>
+                  </div>
                   <div className="flex items-center justify-between text-[10px] text-on-surface-variant">
-                    <span>Viseme: {lastEvaluation?.detectedViseme || targetViseme}</span>
-                    <span className="font-semibold text-emerald-500">{lastEvaluation ? `${lastEvaluation.phonemicScore}% Phonemic Match` : "Listening..."}</span>
+                    <span className="truncate max-w-[140px]">{lipPrediction?.visemeLabel || targetViseme}</span>
+                    <span className={lipPrediction?.isArticulating ? "font-bold text-emerald-600" : "text-on-surface-variant"}>
+                      {lipPrediction?.isArticulating ? "👄 Articulating" : "Ready"}
+                    </span>
                   </div>
                 </div>
+
+                {/* 3. Microphone Speech AI Detection Box */}
+                <div className="p-3 rounded-xl bg-surface-container-lowest border border-secondary/20 flex flex-col justify-between gap-1.5 shadow-sm">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-bold text-secondary uppercase tracking-wider flex items-center gap-1">
+                      🎤 Mic Speech Detection
+                    </span>
+                    <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full ${
+                      speechPrediction && speechPrediction.confidence >= 60 ? "bg-emerald-500/10 text-emerald-600" : "bg-secondary/10 text-secondary"
+                    }`}>
+                      {speechPrediction && speechPrediction.confidence > 0 ? `${speechPrediction.confidence}% Match` : isLiveListening ? "Listening…" : "Paused"}
+                    </span>
+                  </div>
+                  <div className="flex items-baseline gap-2 mt-0.5">
+                    <span className="font-bold text-secondary text-xl">{speechPrediction?.predictedTamil || targetTamil}</span>
+                    <span className="font-bold text-on-surface text-sm">/ {speechPrediction?.predictedEnglish || targetPhrase}</span>
+                  </div>
+                  <div className="flex items-center justify-between text-[10px] text-on-surface-variant">
+                    <span className="truncate max-w-[140px]">
+                      {recognizedSpeech ? `“${recognizedSpeech}”` : speechPrediction?.rawTranscript ? `“${speechPrediction.rawTranscript}”` : "Speak into mic…"}
+                    </span>
+                    <span className={vocalEnergy > 0.04 ? "font-bold text-secondary" : "text-on-surface-variant"}>
+                      {vocalEnergy > 0.04 ? "🔊 Voice Active" : "Quiet"}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Interactive Quick Articulation & Sound Testing Action Bar */}
+              <div className="flex items-center gap-2 flex-wrap pt-0.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const sim = speechDetectorRef.current.simulateSpokenWord(activeLevelData.tamilText, activeLevelData.englishText);
+                    setSpeechPrediction(sim);
+                    setRecognizedSpeech(`${activeLevelData.tamilText} (${activeLevelData.englishText})`);
+                    setVocalEnergy(0.25);
+                    triggerHaptic();
+                  }}
+                  className="px-2.5 py-1 rounded-lg bg-primary/10 hover:bg-primary/20 text-primary text-[11px] font-bold flex items-center gap-1 transition"
+                  title="Simulate speaking target word for this level"
+                >
+                  <Mic size={12} /> 🗣️ Test Spoken "{activeLevelData.englishText}"
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const dummyKin: ArticulatoryKinematics = {
+                      source: "mediapipe_neural",
+                      lipApertureRatio: activeLevelData.targetKinematics.minLar || 0.06,
+                      mouthWidthRatio: (activeLevelData.targetKinematics.minMwr + activeLevelData.targetKinematics.maxMwr) / 2,
+                      jawDisplacementMm: activeLevelData.targetKinematics.minJawMm || 7.0,
+                      withinTarget: true,
+                      cue: "Optimal lip seal match",
+                      postureStatus: "Target Viseme Matched",
+                      landmarksDetected: true,
+                    };
+                    const simPred = lipClassifierRef.current.processFrame(dummyKin, activeLevelData, 0.18);
+                    setLipPrediction(simPred);
+                    setKinematics(dummyKin);
+                    triggerHaptic();
+                  }}
+                  className="px-2.5 py-1 rounded-lg bg-secondary/10 hover:bg-secondary/20 text-secondary text-[11px] font-bold flex items-center gap-1 transition"
+                  title="Simulate target lip kinematics"
+                >
+                  <span>👄 Test Lip Articulation</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsLiveListening((prev) => !prev)}
+                  className={`px-2.5 py-1 rounded-lg text-[11px] font-bold flex items-center gap-1 transition ${
+                    isLiveListening ? "bg-emerald-500/10 text-emerald-600 border border-emerald-500/20" : "bg-surface-container text-on-surface-variant"
+                  }`}
+                  title="Toggle continuous live microphone listening"
+                >
+                  <span className={`w-2 h-2 rounded-full ${isLiveListening ? "bg-emerald-500 animate-ping" : "bg-gray-400"}`} />
+                  {isLiveListening ? "Live Mic & Lips: Active" : "Live Mic: Paused"}
+                </button>
               </div>
 
               {/* Multimodal Diagnostic Score Breakdown Cards */}

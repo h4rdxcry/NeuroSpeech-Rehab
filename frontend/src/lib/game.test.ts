@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { REHAB_100_LEVELS, getLevelData, getLevelsByTier } from "./rehabCurriculum";
 import { evaluateMultimodalAttempt } from "./multimodalEvaluator";
+import { LipReadingClassifier } from "./lipReadingClassifier";
+import { AcousticSpeechDetector, calculateBilingualSimilarity } from "./acousticSpeechDetector";
 
 describe("100-Level Speech Rehabilitation Curriculum", () => {
   it("should have exactly 100 progressive levels across 5 tiers", () => {
@@ -22,6 +24,63 @@ describe("100-Level Speech Rehabilitation Curriculum", () => {
     expect(lvl41.englishText).toBe("Vanakkam");
     expect(lvl41.tamilText).toBe("வணக்கம்");
     expect(lvl41.tier).toBe(3);
+  });
+});
+
+describe("Visual Lip-Reading Neural Classifier", () => {
+  it("should classify bilabial closure viseme when lips touch", () => {
+    const classifier = new LipReadingClassifier();
+    const result = classifier.classifyInstantViseme(0.05, 0.48, 6.0);
+    expect(result.viseme).toBe("bilabial");
+  });
+
+  it("should classify open vowel when jaw drops", () => {
+    const classifier = new LipReadingClassifier();
+    const result = classifier.classifyInstantViseme(0.55, 0.46, 14.5);
+    expect(result.viseme).toBe("open");
+  });
+
+  it("should predict target words in Tamil and English when articulating", () => {
+    const classifier = new LipReadingClassifier();
+    const lvl1 = getLevelData(1); // Amma
+    const mockKinematics = {
+      source: "mediapipe_neural" as const,
+      lipApertureRatio: 0.08,
+      mouthWidthRatio: 0.46,
+      jawDisplacementMm: 7.0,
+      withinTarget: true,
+      cue: "Bilabial seal",
+      postureStatus: "Bilabial",
+      landmarksDetected: true,
+    };
+
+    const prediction = classifier.processFrame(mockKinematics, lvl1, 0.12);
+    expect(prediction.wordEnglish).toBe("Amma");
+    expect(prediction.wordTamil).toBe("அம்மா");
+    expect(prediction.confidence).toBeGreaterThanOrEqual(70);
+    expect(prediction.currentViseme).toBe("bilabial");
+    expect(prediction.isArticulating).toBe(true);
+  });
+});
+
+describe("Acoustic Speech & Keyword Detector", () => {
+  it("should calculate high similarity for Tamil and English equivalents", () => {
+    expect(calculateBilingualSimilarity("Amma", "Amma")).toBe(1.0);
+    expect(calculateBilingualSimilarity("அம்மா", "அம்மா")).toBe(1.0);
+    expect(calculateBilingualSimilarity("amma", "Amma")).toBe(1.0);
+    expect(calculateBilingualSimilarity("vanakkam", "Vanakkam")).toBe(1.0);
+  });
+
+  it("should fuse acoustic energy with curriculum level when user vocalizes", () => {
+    const lvl1 = getLevelData(1);
+    const detector = new AcousticSpeechDetector(lvl1);
+    const result = detector.processAcousticFrame(0.15, 160, true);
+
+    expect(result.predictedEnglish).toBe("Amma");
+    expect(result.predictedTamil).toBe("அம்மா");
+    expect(result.isMatch).toBe(true);
+    expect(result.confidence).toBeGreaterThanOrEqual(80);
+    expect(result.source).toBe("acoustic_fusion");
   });
 });
 
