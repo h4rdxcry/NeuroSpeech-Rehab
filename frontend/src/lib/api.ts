@@ -1,15 +1,47 @@
+const API_ENDPOINT_KEY = "neurospeech_api_url";
+
+export function normalizeApiBase(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  try {
+    const url = new URL(trimmed);
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
+      return null;
+    }
+    const pathname = url.pathname.replace(/\/+$/, '');
+    if (pathname && pathname !== '/api/v1') return null;
+    if (url.protocol === 'http:' && !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)) return null;
+    return `${url.origin}${pathname === '/api/v1' ? '' : ''}`;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeSharedApiBase(value: string): string | null {
+  const normalized = normalizeApiBase(value);
+  if (!normalized) return null;
+  try {
+    const url = new URL(normalized);
+    return url.protocol === 'https:' && url.hostname.endsWith('.trycloudflare.com') ? normalized : null;
+  } catch {
+    return null;
+  }
+}
+
 export function getActiveApiBase(): string {
   if (typeof window !== "undefined") {
     try {
       const params = new URLSearchParams(window.location.search);
       const paramUrl = params.get("apiUrl");
-      if (paramUrl) {
-        window.localStorage.setItem("neurospeech_api_url", paramUrl);
-        return paramUrl.replace(/\/$/, "").replace(/\/api\/v1$/, "");
+      const sharedBase = paramUrl ? normalizeSharedApiBase(paramUrl) : null;
+      if (sharedBase) {
+        window.localStorage.setItem(API_ENDPOINT_KEY, sharedBase);
+        return sharedBase;
       }
-      const stored = window.localStorage.getItem("neurospeech_api_url");
-      if (stored) {
-        return stored.replace(/\/$/, "").replace(/\/api\/v1$/, "");
+      const stored = window.localStorage.getItem(API_ENDPOINT_KEY);
+      const storedBase = stored ? normalizeApiBase(stored) : null;
+      if (storedBase) {
+        return storedBase;
       }
     } catch {
       /* ignore storage access error */
@@ -18,13 +50,14 @@ export function getActiveApiBase(): string {
 
   const envUrl = import.meta.env.VITE_API_URL as string | undefined;
   if (envUrl) {
-    return envUrl.replace(/\/$/, "").replace(/\/api\/v1$/, "");
+    return normalizeApiBase(envUrl) ?? "";
   }
   return "";
 }
 
 export const API_BASE = getActiveApiBase();
 export const AUTH_EXPIRED_EVENT = "neurospeech-auth-expired";
+export const API_ENDPOINT_STORAGE_KEY = API_ENDPOINT_KEY;
 
 export function clearTokens() {
   window.localStorage.removeItem("access_token");

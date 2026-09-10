@@ -1,6 +1,7 @@
 import ResearchModels from './components/research/ResearchModels'
 import ResearchParticipants from './components/research/ResearchParticipants'
 import PatientSettings from './components/patient/PatientSettings'
+import Login from './components/patient/Login'
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider, RequireRole } from './lib/auth'
 import PatientLayout from './components/patient/PatientLayout'
@@ -21,8 +22,8 @@ import ResearchEvaluation from './components/research/ResearchEvaluation'
 export function AppRoutes() {
   return (
     <Routes>
-      <Route path="/login" element={<Navigate to="/patient/session" replace />} />
-      <Route path="/" element={<Navigate to="/patient/session" replace />} />
+      <Route path="/login" element={<Login />} />
+      <Route path="/" element={<Navigate to="/login" replace />} />
       <Route path="/patient" element={<RequireRole role="PATIENT"><PatientLayout /></RequireRole>}>
         <Route index element={<Navigate to="/patient/session" replace />} />
         <Route path="session" element={<PatientSession />} />
@@ -47,7 +48,7 @@ export function AppRoutes() {
         <Route path="annotations" element={<ResearchAnnotations />} />
         <Route path="evaluation" element={<ResearchEvaluation />} />
       </Route>
-      <Route path="*" element={<Navigate to="/patient/session" replace />} />
+      <Route path="*" element={<Navigate to="/login" replace />} />
     </Routes>
   )
 }

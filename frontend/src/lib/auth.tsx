@@ -8,6 +8,7 @@ interface AuthContextValue {
   user: User | null;
   loading: boolean;
   login: (email: string, password: string) => Promise<User>;
+  loginAsDemo: (role?: UserRole) => User;
   logout: () => void;
   refresh: () => Promise<void>;
 }
@@ -22,45 +23,48 @@ export function normalizeUser(raw: UserResponse): User {
   return { ...raw, role: role as UserRole };
 }
 
-export const DEFAULT_PATIENT_USER: User = {
-  id: "patient-demo-user-id",
-  email: "patient@neurospeech.dev",
-  role: "PATIENT",
-  is_active: true,
-  created_at: new Date().toISOString(),
-  updated_at: new Date().toISOString(),
-};
-
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = useState<User | null>(DEFAULT_PATIENT_USER);
-  const [loading, setLoading] = useState(false);
+  const [user, setUser] = useState<User | null>(null);
+  const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
   const refresh = useCallback(async () => {
+    setLoading(true);
     try {
-      // 1. Try existing token
-      if (window.localStorage.getItem("access_token")) {
-        const me = await api.get<UserResponse>("/api/v1/auth/me");
-        setUser(normalizeUser(me));
+      const token = window.localStorage.getItem("access_token");
+      if (!token) {
+        setUser(null);
         return;
       }
-
-      // 2. Seamless auto-login in background with default patient credentials
-      const data = await api.post<{ access_token: string; refresh_token: string; token_type: string }>(
-        "/api/v1/auth/login",
-        { email: "patient@neurospeech.dev", password: "NeuroSpeechDemo123!" },
-        false
-      );
-      if (typeof window !== "undefined") {
-        window.localStorage.setItem("access_token", data.access_token);
-        window.localStorage.setItem("refresh_token", data.refresh_token);
+      if (token.startsWith("demo_token_")) {
+        const storedDemo = window.localStorage.getItem("neurospeech_demo_user");
+        if (storedDemo) {
+          try {
+            const parsed = JSON.parse(storedDemo) as User;
+            setUser(parsed);
+            return;
+          } catch {
+            /* ignore JSON parse error */
+          }
+        }
+        const roleStr = token.replace("demo_token_", "").toUpperCase();
+        const role = ["PATIENT", "CLINICIAN", "RESEARCHER", "ADMIN"].includes(roleStr) ? (roleStr as UserRole) : "PATIENT";
+        const demoUser: User = {
+          id: `demo-${role.toLowerCase()}-id`,
+          email: `${role.toLowerCase()}@neurospeech.local`,
+          role,
+          is_active: true,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        };
+        setUser(demoUser);
+        return;
       }
-      const me = normalizeUser(await api.get<UserResponse>("/api/v1/auth/me"));
-      setUser(me);
+      setUser(normalizeUser(await api.get<UserResponse>("/api/v1/auth/me")));
     } catch {
-      // 3. Graceful fallback: maintain instant patient profile for zero-friction tracking
-      setUser((prev) => prev ?? DEFAULT_PATIENT_USER);
+      clearTokens();
+      setUser(null);
     } finally {
       setLoading(false);
     }
@@ -69,12 +73,33 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     void refresh();
     const expire = () => {
-      // On token expiration, auto-refresh transparently
-      void refresh();
+      clearTokens();
+      setUser(null);
+      navigate("/login", { replace: true });
     };
     window.addEventListener(AUTH_EXPIRED_EVENT, expire);
     return () => window.removeEventListener(AUTH_EXPIRED_EVENT, expire);
   }, [refresh]);
+
+  const loginAsDemo = useCallback((role: UserRole = "PATIENT"): User => {
+    const demoUser: User = {
+      id: `demo-${role.toLowerCase()}-id`,
+      email: `${role.toLowerCase()}@neurospeech.local`,
+      role,
+      is_active: true,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem("access_token", `demo_token_${role.toLowerCase()}`);
+      window.localStorage.setItem("refresh_token", `demo_refresh_${role.toLowerCase()}`);
+      window.localStorage.setItem("neurospeech_demo_user", JSON.stringify(demoUser));
+    }
+    queryClient.clear();
+    setUser(demoUser);
+    setLoading(false);
+    return demoUser;
+  }, [queryClient]);
 
   const login = async (email: string, password: string) => {
     const data = await api.post<{ access_token: string; refresh_token: string; token_type: string }>(
@@ -85,6 +110,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (typeof window !== "undefined") {
       window.localStorage.setItem("access_token", data.access_token);
       window.localStorage.setItem("refresh_token", data.refresh_token);
+      window.localStorage.removeItem("neurospeech_demo_user");
     }
     const me = normalizeUser(await api.get<UserResponse>("/api/v1/auth/me"));
     queryClient.clear();
@@ -95,13 +121,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const logout = () => {
     clearTokens();
+    if (typeof window !== "undefined") {
+      window.localStorage.removeItem("neurospeech_demo_user");
+    }
     queryClient.clear();
-    setUser(DEFAULT_PATIENT_USER);
-    navigate("/patient/session", { replace: true });
+    setUser(null);
+    navigate("/login", { replace: true });
   };
 
   return (
-    <AuthContext.Provider value={{ user: user ?? DEFAULT_PATIENT_USER, loading, login, logout, refresh }}>
+    <AuthContext.Provider value={{ user, loading, login, loginAsDemo, logout, refresh }}>
       {children}
     </AuthContext.Provider>
   );
@@ -115,10 +144,9 @@ export function useAuth() {
 
 export function RequireRole({ role, children }: { role: UserRole; children: React.ReactNode }) {
   const { user, loading } = useAuth();
-  if (loading) return null;
-  // Always permit access without login barriers
-  if (!user) return <>{children}</>;
-  const hasAccess = user.role === role || (role === "RESEARCHER" && user.role === "ADMIN") || role === "PATIENT";
+  if (loading) return <p role="status" className="p-6 text-sm text-slate-600">Checking your sign-in…</p>;
+  if (!user) return <Navigate to="/login" replace />;
+  const hasAccess = user.role === role || (role === "RESEARCHER" && user.role === "ADMIN");
   if (!hasAccess) {
     const destination = user.role === "PATIENT" ? "/patient/session" : user.role === "CLINICIAN" ? "/clinician" : "/research";
     return <Navigate to={destination} replace />;

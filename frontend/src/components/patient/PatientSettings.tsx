@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Type, Contrast, Feather, UserRound } from 'lucide-react'
-import { api } from '../../lib/api'
+import { api, API_ENDPOINT_STORAGE_KEY, normalizeApiBase } from '../../lib/api'
 import { useAuth } from '../../lib/auth'
 import { applyPreferences, readPreferences, type Preferences } from '../../lib/preferences'
 import type { Patient } from '../../lib/types'
@@ -37,7 +37,8 @@ export default function PatientSettings() {
 function ServerConnectionCard() {
   const [currentUrl, setCurrentUrl] = useState(() => {
     try {
-      return localStorage.getItem('neurospeech_api_url') || '';
+      const stored = localStorage.getItem(API_ENDPOINT_STORAGE_KEY) || '';
+      return normalizeApiBase(stored) || '';
     } catch {
       return '';
     }
@@ -47,34 +48,41 @@ function ServerConnectionCard() {
   const [isTesting, setIsTesting] = useState(false);
 
   const handleSave = () => {
-    const trimmed = inputUrl.trim().replace(/\/$/, '');
-    if (trimmed) {
-      localStorage.setItem('neurospeech_api_url', trimmed);
-      setCurrentUrl(trimmed);
-      setStatusMessage(`Connected to: ${trimmed}`);
+    const normalized = normalizeApiBase(inputUrl);
+    if (normalized) {
+      localStorage.setItem(API_ENDPOINT_STORAGE_KEY, normalized);
+      setCurrentUrl(normalized);
+      setInputUrl(normalized);
+      setStatusMessage(`Endpoint saved: ${normalized}`);
     } else {
-      localStorage.removeItem('neurospeech_api_url');
+      localStorage.removeItem(API_ENDPOINT_STORAGE_KEY);
       setCurrentUrl('');
-      setStatusMessage('Reset to default backend.');
+      setStatusMessage('Enter an HTTPS endpoint, or localhost for local development.');
     }
   };
 
   const handleTest = async () => {
     setIsTesting(true);
     setStatusMessage(null);
-    const target = (inputUrl.trim() || currentUrl).replace(/\/$/, '');
+    const target = normalizeApiBase(inputUrl || currentUrl);
+    if (!target) {
+      setStatusMessage('Enter an HTTPS endpoint, or localhost for local development.');
+      setIsTesting(false);
+      return;
+    }
     try {
-      await fetch(`${target}/docs`, { method: 'HEAD', mode: 'no-cors' });
-      setStatusMessage('✓ Server reachable! Backend is live and accepting connections.');
+      const response = await fetch(`${target}/health`, { headers: { 'bypass-tunnel-reminder': 'true' } });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      setStatusMessage('Server reachable. Health check passed.');
     } catch {
-      setStatusMessage('✗ Unable to reach server at this address. Check if your backend and tunnel are running.');
+      setStatusMessage('Unable to reach that server. Check the endpoint and backend status.');
     } finally {
       setIsTesting(false);
     }
   };
 
   const handleReset = () => {
-    localStorage.removeItem('neurospeech_api_url');
+    localStorage.removeItem(API_ENDPOINT_STORAGE_KEY);
     setCurrentUrl('');
     setInputUrl('');
     setStatusMessage('Reset to default auto-detected backend.');
@@ -135,7 +143,7 @@ function ServerConnectionCard() {
         <div className="p-3 rounded-xl bg-surface-container-low border border-outline-variant/30 text-[11px] text-on-surface-variant">
           <span className="font-bold text-on-surface">💡 Pro Tip for Sharing:</span>
           <p className="mt-0.5">
-            You can share your Vercel link with the parameter <code className="px-1 py-0.5 rounded bg-surface-container font-mono text-[10px]">?apiUrl=https://your-tunnel.trycloudflare.com</code>. Anyone opening that link will automatically connect to your PC's live backend!
+            For a shared HTTPS tunnel, the link may include <code className="px-1 py-0.5 rounded bg-surface-container font-mono text-[10px]">?apiUrl=https://your-tunnel.trycloudflare.com</code>. The app accepts this shared form only for Cloudflare HTTPS tunnels.
           </p>
         </div>
       </div>

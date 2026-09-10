@@ -15,7 +15,7 @@ export function useSessionWebSocket(sessionId: string | null) {
   }, [sessionId]);
 
   const sendAudio = useCallback((chunk: ArrayBuffer) => clientRef.current?.sendAudio(chunk), []);
-  const stopStream = useCallback(() => clientRef.current?.stop() ?? Promise.reject(new Error("No stream is open.")), []);
+  const stopStream = useCallback(() => clientRef.current?.stop() ?? Promise.resolve(), []);
   const closeStream = useCallback(() => { clientRef.current?.dispose(); clientRef.current = null; }, []);
   useEffect(() => {
     setState(initialStreamState);

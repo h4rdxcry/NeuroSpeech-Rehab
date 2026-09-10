@@ -1,18 +1,16 @@
 /**
- * Real-Time Client-Side Articulatory Kinematics and Facial Tracking HUD.
- * Tracks lip aperture, mouth width, and draws real-time articulatory biofeedback on canvas.
+ * Browser-side camera motion preview for the patient UI.
+ *
+ * This module does not acquire EEG or EMG and does not run a validated facial
+ * landmark model. Values returned from the optical preview are labelled as
+ * camera-derived motion proxies and must not be used as clinical scores.
  */
 
 export interface ArticulatoryKinematics {
-  /** True when the tracker has an active video frame to analyse. False = no data. */
-  faceDetected: boolean;
+  source: "camera_proxy" | "synthetic_preview";
   lipApertureRatio: number;
   mouthWidthRatio: number;
   jawDisplacementMm: number;
-  leftZygomaticusUv: number;
-  rightZygomaticusUv: number;
-  bilateralSymmetryPct: number;
-  targetMatchScore: number;
   withinTarget: boolean;
   cue: string;
   postureStatus: string;
@@ -30,6 +28,7 @@ export const TARGET_VOWEL_RANGES: Record<string, TargetKinematicRange> = {
   open: { minLar: 0.40, maxLar: 0.75, minMwr: 0.35, maxMwr: 0.65, label: "Open Vowel /a/" },
   spread: { minLar: 0.12, maxLar: 0.35, minMwr: 0.50, maxMwr: 0.85, label: "Spread Vowel /i/" },
   rounded: { minLar: 0.15, maxLar: 0.40, minMwr: 0.25, maxMwr: 0.48, label: "Rounded Vowel /u/" },
+  bilabial: { minLar: 0.00, maxLar: 0.18, minMwr: 0.30, maxMwr: 0.60, label: "Bilabial closure /m/ /b/ /p/" },
   default: { minLar: 0.25, maxLar: 0.55, minMwr: 0.35, maxMwr: 0.65, label: "Neutral Articulation" },
 };
 
@@ -39,8 +38,8 @@ export class FaceMeshTracker {
   private static lastFrameLuminance: number = 128;
 
   /**
-   * Estimates lip kinematics from video frame using brightness/color thresholding and facial geometry.
-   * Runs at 60 FPS directly in the browser without network latency.
+   * Estimates camera-derived oral motion from a video frame. This is a
+   * responsive preview heuristic, not facial landmark inference.
    */
   static estimateKinematics(
     video: HTMLVideoElement,
@@ -98,7 +97,7 @@ export class FaceMeshTracker {
     const mouthCenterX = w * 0.50;
     const mouthCenterY = h * 0.62;
 
-    // Dynamic tracking modulated by audio energy, optical aperture and articulatory displacement
+    // Dynamic preview values are camera proxies, not measured anatomy.
     const effectiveAperture = Math.max(vocalEnergy * 1.8, opticalAperture);
     const baseLar = 0.22 + Math.min(effectiveAperture, 0.48);
     const baseMwr = 0.48 + Math.min(vocalEnergy * 0.4 + opticalCornerSpread, 0.22);
@@ -142,26 +141,7 @@ export class FaceMeshTracker {
     ctx.lineTo(mouthCenterX, mouthCenterY + lipHeightPx + jawDisplacement);
     ctx.stroke();
 
-    // 2. Bilateral sEMG Sensor Site Overlays (Zygomaticus Major L/R)
-    const emgLeftX = mouthCenterX - lipWidthPx * 1.45;
-    const emgLeftY = mouthCenterY - 35;
-    const emgRightX = mouthCenterX + lipWidthPx * 1.45;
-    const emgRightY = mouthCenterY - 35;
-
-    ctx.strokeStyle = "rgba(0, 240, 255, 0.6)";
-    ctx.lineWidth = 1.5;
-    ctx.shadowColor = "rgba(0, 240, 255, 0.8)";
-    ctx.shadowBlur = 8;
-    // Left EMG node
-    ctx.beginPath();
-    ctx.arc(emgLeftX, emgLeftY, 7, 0, 2 * Math.PI);
-    ctx.stroke();
-    // Right EMG node
-    ctx.beginPath();
-    ctx.arc(emgRightX, emgRightY, 7, 0, 2 * Math.PI);
-    ctx.stroke();
-
-    // 3. Target Guidance Boundary (Glowing Ellipse)
+    // 2. Camera-derived target guidance boundary (Glowing Ellipse)
     ctx.setLineDash([5, 5]);
     ctx.strokeStyle = "rgba(245, 158, 11, 0.7)";
     ctx.lineWidth = 2;
@@ -177,7 +157,7 @@ export class FaceMeshTracker {
     );
     ctx.stroke();
 
-    // 4. Live Lip Vermilion Outer Contour (Glowing Neon Emerald / Cyan)
+    // 3. Live camera-motion contour (Glowing Neon Emerald / Cyan)
     ctx.setLineDash([]);
     const mainColor = withinTarget ? "#10b981" : "#00f0ff";
     ctx.strokeStyle = mainColor;
@@ -196,7 +176,7 @@ export class FaceMeshTracker {
     ctx.ellipse(mouthCenterX, mouthCenterY, lipWidthPx * 0.65, lipHeightPx * 0.55, 0, 0, 2 * Math.PI);
     ctx.stroke();
 
-    // 5. 3D FaceMesh Landmark Anchor Nodes
+    // 4. Preview anchor nodes (not validated face landmarks)
     ctx.fillStyle = withinTarget ? "#34d399" : "#67e8f9";
     const anchors = [
       [mouthCenterX - lipWidthPx, mouthCenterY], // Left corner
@@ -234,7 +214,7 @@ export class FaceMeshTracker {
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.fillText(
-      `LAR: ${(baseLar * 100).toFixed(0)}% · MWR: ${(baseMwr * 100).toFixed(0)}% · ${withinTarget ? "★ 95%+ ALIGNED" : "ADJUSTING"}`,
+      `Camera proxy · LAR: ${(baseLar * 100).toFixed(0)}% · MWR: ${(baseMwr * 100).toFixed(0)}%`,
       mouthCenterX,
       pillY + pillHeight / 2
     );
@@ -242,12 +222,6 @@ export class FaceMeshTracker {
     ctx.restore();
 
     const jawMm = Number((jawDisplacement * 0.9 + 5).toFixed(1));
-    // Use optical luminance delta as a proxy for EMG noise — no Math.random()
-    const emgNoise = (FaceMeshTracker.lastFrameLuminance % 3.0) * 0.5;
-    const leftUv = Number((18 + vocalEnergy * 45 + emgNoise).toFixed(1));
-    const rightUv = Number((18 + vocalEnergy * 43.5 + emgNoise * 0.95).toFixed(1));
-    const symm = Number((Math.min(leftUv, rightUv) / Math.max(leftUv, rightUv) * 100).toFixed(1));
-    const matchScore = withinTarget ? Math.min(98, Math.round(88 + vocalEnergy * 15)) : Math.round(65 + vocalEnergy * 20);
     
     let postureStatus = "Neutral Bilabial Alignment";
     if (baseLar > 0.45) postureStatus = "Open Vowel Jaw Lowering";
@@ -255,14 +229,10 @@ export class FaceMeshTracker {
     else if (baseLar < 0.25) postureStatus = "Bilabial Plosive Seal (/p/, /b/, /m/)";
 
     return {
-      faceDetected: true,
+      source: "camera_proxy",
       lipApertureRatio: Number(baseLar.toFixed(3)),
       mouthWidthRatio: Number(baseMwr.toFixed(3)),
       jawDisplacementMm: jawMm,
-      leftZygomaticusUv: leftUv,
-      rightZygomaticusUv: rightUv,
-      bilateralSymmetryPct: symm,
-      targetMatchScore: matchScore,
       withinTarget,
       cue,
       postureStatus,
@@ -278,13 +248,8 @@ export class FaceMeshTracker {
     const jawMm = Number((7.0 + (cycle + 1) * 4.5 + energyBoost * 5).toFixed(1));
     const lar = Number((0.20 + (cycle + 1) * 0.22 + energyBoost * 0.2).toFixed(3));
     const mwr = Number((0.45 + (Math.cos(timeMs / 600) + 1) * 0.12).toFixed(3));
-    const leftUv = Number((20 + (cycle + 1) * 12 + energyBoost * 22).toFixed(1));
-    const rightUv = Number((19.8 + (cycle + 1) * 11.6 + energyBoost * 21.5).toFixed(1));
-    const symm = Number(((Math.min(leftUv, rightUv) / Math.max(leftUv, rightUv)) * 100).toFixed(1));
-    
     const target = TARGET_VOWEL_RANGES[targetType] || TARGET_VOWEL_RANGES.default;
     const withinTarget = lar >= target.minLar && lar <= target.maxLar;
-    const score = withinTarget ? 96 : 84;
     
     let postureStatus = "Dynamic Articulation";
     let cue = "Keep lips lightly touching without pressing teeth together.";
@@ -297,14 +262,10 @@ export class FaceMeshTracker {
     }
 
     return {
-      faceDetected: true,  // Simulation mode — user explicitly enabled
+      source: "synthetic_preview",
       lipApertureRatio: lar,
       mouthWidthRatio: mwr,
       jawDisplacementMm: jawMm,
-      leftZygomaticusUv: leftUv,
-      rightZygomaticusUv: rightUv,
-      bilateralSymmetryPct: symm,
-      targetMatchScore: score,
       withinTarget,
       cue,
       postureStatus,
@@ -312,8 +273,8 @@ export class FaceMeshTracker {
   }
 
   /**
-   * Renders a dedicated 3D-styled Anatomical Articulatory Avatar on Canvas.
-   * Visualizes 3D Mandible lowering, Lip aperture opening/closing, and bilateral sEMG excitation.
+   * Renders a non-clinical camera-motion preview avatar. It does not render
+   * or imply EEG/EMG acquisition.
    */
   static draw3DArticulatoryAvatar(
     canvas: HTMLCanvasElement,
@@ -379,43 +340,7 @@ export class FaceMeshTracker {
     ctx.lineTo(cx + 5, cy);
     ctx.stroke();
 
-    // 4. 3D Bilateral Zygomaticus Major Muscle Fibers (sEMG Sensor Lines)
-    const emgLeftAlpha = Math.min(0.25 + (kinematics.leftZygomaticusUv / 100) * 0.75, 1);
-    const emgRightAlpha = Math.min(0.25 + (kinematics.rightZygomaticusUv / 100) * 0.75, 1);
-
-    // Left Zygomaticus Fiber
-    ctx.strokeStyle = `rgba(168, 85, 247, ${emgLeftAlpha})`;
-    ctx.lineWidth = 3.5;
-    ctx.shadowColor = "rgba(168, 85, 247, 0.8)";
-    ctx.shadowBlur = 12;
-    ctx.beginPath();
-    ctx.moveTo(cx - 75, cy - 18);
-    ctx.quadraticCurveTo(cx - 65, cy + 15, cx - 35, cy + 30);
-    ctx.stroke();
-
-    // Left Electrode Node
-    ctx.fillStyle = "#c084fc";
-    ctx.beginPath();
-    ctx.arc(cx - 75, cy - 18, 6, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Right Zygomaticus Fiber
-    ctx.strokeStyle = `rgba(6, 182, 212, ${emgRightAlpha})`;
-    ctx.shadowColor = "rgba(6, 182, 212, 0.8)";
-    ctx.beginPath();
-    ctx.moveTo(cx + 75, cy - 18);
-    ctx.quadraticCurveTo(cx + 65, cy + 15, cx + 35, cy + 30);
-    ctx.stroke();
-
-    // Right Electrode Node
-    ctx.fillStyle = "#22d3ee";
-    ctx.beginPath();
-    ctx.arc(cx + 75, cy - 18, 6, 0, Math.PI * 2);
-    ctx.fill();
-
-    ctx.shadowBlur = 0;
-
-    // 5. Dynamic 3D Mandible (Jaw Bone) - Lowers dynamically with jaw displacement
+    // 4. Dynamic camera-derived jaw preview
     const jawYOffset = (kinematics.jawDisplacementMm - 6) * 2.8;
     const jawChinY = cy + 78 + Math.max(0, jawYOffset);
 
@@ -431,7 +356,7 @@ export class FaceMeshTracker {
     ctx.lineTo(cx + 82, cy + 8);
     ctx.stroke();
 
-    // 6. Dynamic 3D Lips & Oral Aperture
+    // 5. Dynamic camera-derived lips & oral aperture
     const mouthW = 34 + kinematics.mouthWidthRatio * 42;
     const mouthH = 5 + kinematics.lipApertureRatio * 32;
     const mouthY = cy + 28 + jawYOffset * 0.35;
@@ -467,7 +392,7 @@ export class FaceMeshTracker {
 
     ctx.shadowBlur = 0;
 
-    // 7. On-Screen 3D Articulatory Telemetry Badges
+    // 6. On-screen camera-derived telemetry badges
     ctx.fillStyle = "rgba(15, 23, 42, 0.85)";
     ctx.strokeStyle = "rgba(255, 255, 255, 0.12)";
     ctx.lineWidth = 1;
@@ -483,7 +408,7 @@ export class FaceMeshTracker {
     ctx.font = "bold 15px -apple-system, sans-serif";
     ctx.fillText(`${kinematics.jawDisplacementMm.toFixed(1)} mm`, 26, 52);
 
-    // Right Badge: EMG Symmetry
+    // Right badge: camera proxy source
     ctx.fillStyle = "rgba(15, 23, 42, 0.85)";
     ctx.beginPath();
     ctx.roundRect(w - 156, 16, 140, 48, 10);
@@ -492,10 +417,10 @@ export class FaceMeshTracker {
 
     ctx.fillStyle = "#94a3b8";
     ctx.font = "10px -apple-system, sans-serif";
-    ctx.fillText("FACIAL sEMG SYMMETRY", w - 146, 32);
-    ctx.fillStyle = "#34d399";
+    ctx.fillText("CAMERA MOTION PROXY", w - 146, 32);
+    ctx.fillStyle = "#38bdf8";
     ctx.font = "bold 15px -apple-system, sans-serif";
-    ctx.fillText(`${kinematics.bilateralSymmetryPct.toFixed(1)}%`, w - 146, 52);
+    ctx.fillText(`${(kinematics.mouthWidthRatio * 100).toFixed(0)}% width`, w - 146, 52);
 
     // Bottom Status Pill
     const botW = Math.min(w * 0.82, 320);
@@ -521,4 +446,3 @@ export class FaceMeshTracker {
     ctx.restore();
   }
 }
-
