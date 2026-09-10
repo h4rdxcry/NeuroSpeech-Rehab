@@ -1,9 +1,0 @@
-node_modules
-.vite
-dist
-android
-test-results
-playwright-report
-*.local
-.env*
-public/wasm
