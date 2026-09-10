@@ -1,7 +1,7 @@
 """Inference Engine: Low-Latency (<150ms) GPU/CPU Runtime for Multimodal Speech Rehabilitation.
-Thread-safe singleton with pre-warmed models, temporal viseme classification, and dynamic kinematics.
+Thread-safe singleton with pre-warmed models, dual-stream visual speech fusion, and CTC beam search.
 """
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Optional, List, Tuple, Union
 import os
 import time
 import threading
@@ -12,7 +12,10 @@ import numpy as np
 from ml.models.multimodal_fusion import MultimodalFusionModel
 from ml.models.articulation_scorer import ArticulationScorer
 from ml.models.viseme_classifier import PhonemeVisemeMapper, VisemeClass
+from ml.models.dual_stream_visual_encoder import DualStreamVisualSpeechEncoder
+from ml.models.viseme_beam_search import VisemeBeamSearchDecoder
 from ml.pipelines.kinematics_engine import KinematicsEngine
+from ml.pipelines.mouth_roi_extractor import MouthROIExtractor
 
 
 class MultimodalInferenceEngine:
@@ -27,6 +30,8 @@ class MultimodalInferenceEngine:
             self.device = torch.device(device)
 
         self.model: Optional[MultimodalFusionModel] = None
+        self.dual_stream_encoder: Optional[DualStreamVisualSpeechEncoder] = None
+        self.beam_decoder: Optional[VisemeBeamSearchDecoder] = None
         self.is_ready = False
         self._load_lock = threading.Lock()
 
@@ -40,7 +45,7 @@ class MultimodalInferenceEngine:
         return cls._instance
 
     def initialize(self, weights_path: Optional[str] = None):
-        """Initializes and pre-warms the multimodal model."""
+        """Initializes and pre-warms the multimodal model and dual-stream visual speech networks."""
         with self._load_lock:
             if self.is_ready:
                 return
@@ -52,6 +57,16 @@ class MultimodalInferenceEngine:
                 eeg_in_dim=25,
                 d_model=128,
             ).to(self.device)
+
+            self.dual_stream_encoder = DualStreamVisualSpeechEncoder(
+                kinematics_dim=40,
+                pixel_channels=1,
+                hidden_dim=64,
+                d_model=128,
+                num_viseme_classes=8,
+            ).to(self.device)
+
+            self.beam_decoder = VisemeBeamSearchDecoder(beam_width=8)
 
             # Load checkpoint if provided and exists
             if weights_path and Path(weights_path).exists():
@@ -65,6 +80,7 @@ class MultimodalInferenceEngine:
                     print(f"[Warning] Failed to load multimodal weights from {weights_path}: {e}")
 
             self.model.eval()
+            self.dual_stream_encoder.eval()
 
             # Pre-warm GPU with dummy forward pass
             with torch.inference_mode():
@@ -73,7 +89,9 @@ class MultimodalInferenceEngine:
                 dummy_emg = torch.randn(1, 40, device=self.device)
                 dummy_eeg = torch.randn(1, 25, device=self.device)
                 dummy_vision_seq = torch.randn(1, 16, 40, device=self.device)
+                dummy_pixels = torch.randn(1, 1, 16, 48, 48, device=self.device)
                 _ = self.model(dummy_audio, dummy_vision, dummy_emg, dummy_eeg, dummy_vision_seq)
+                _ = self.dual_stream_encoder(dummy_vision_seq, dummy_pixels)
 
             self.is_ready = True
 
@@ -84,15 +102,16 @@ class MultimodalInferenceEngine:
         emg_features: Optional[List[float]] = None,
         eeg_features: Optional[List[float]] = None,
         landmarks_sequence: Optional[List[List[List[float]]]] = None,
+        mouth_frames_sequence: Optional[List[Any]] = None,
         target_phrase: Optional[str] = None,
         recognized_transcript: Optional[str] = None,
         target_vowel_type: str = "default",
         active_modalities: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
-        """Executes low-latency multimodal prediction and returns clinical rehabilitation scores."""
+        """Executes low-latency multimodal prediction with dual-stream visual speech and beam search."""
         t0 = time.perf_counter()
 
-        if not self.is_ready or self.model is None:
+        if not self.is_ready or self.model is None or self.dual_stream_encoder is None or self.beam_decoder is None:
             self.initialize()
 
         device = self.device
@@ -106,30 +125,27 @@ class MultimodalInferenceEngine:
         emg_t = to_tensor(emg_features, 40)
         eeg_t = to_tensor(eeg_features, 25)
 
-        # Handle Vision: single frame vs sequence
         vision_seq_t = None
         vision_t = None
         kinematic_biomarkers: Dict[str, Any] = {}
         viseme_analysis: Dict[str, Any] = {}
+        visual_word_decoding: Dict[str, Any] = {}
+        dual_stream_info: Dict[str, Any] = {}
 
+        # 1. Kinematics processing if landmarks sequence provided
         if landmarks_sequence and len(landmarks_sequence) > 0:
-            # Extract 40-dim trajectory from temporal landmark sequence
             trajectory = KinematicsEngine.extract_trajectory(landmarks_sequence)
             t_len = trajectory.shape[0]
 
             if t_len > 0:
                 vision_seq_t = torch.tensor(trajectory, dtype=torch.float32, device=device).unsqueeze(0)  # (1, T, 40)
                 
-                # Compute dynamic kinematics derivatives
                 derivs = KinematicsEngine.compute_derivatives(trajectory)
                 smoothness = KinematicsEngine.compute_movement_smoothness(derivs["jerk"], derivs["velocity"])
                 peak_vel = float(np.max(np.linalg.norm(derivs["velocity"], axis=-1))) if derivs["velocity"].size > 0 else 0.0
 
-                # DTW comparison against target phoneme template
                 canonical = KinematicsEngine.generate_canonical_trajectory(target_vowel_type, num_frames=max(t_len, 15))
                 dtw_dist, dtw_sim = KinematicsEngine.fast_dtw_distance(trajectory, canonical)
-
-                # Bilateral symmetry across sequence (feature 20 is bilateral symmetry)
                 mean_symmetry = float(np.mean(trajectory[:, 20])) if t_len > 0 else 1.0
 
                 kinematic_biomarkers = {
@@ -143,11 +159,37 @@ class MultimodalInferenceEngine:
                 }
 
         elif vision_features is not None:
-            if len(vision_features) == 40:
-                vision_t = torch.tensor([vision_features], dtype=torch.float32, device=device)
-            elif len(vision_features) == 16:
+            if len(vision_features) in (16, 40):
                 vision_t = torch.tensor([vision_features], dtype=torch.float32, device=device)
 
+        # 2. Dual-Stream Pixel Appearance Processing if mouth frames provided
+        pixel_seq_t = None
+        if mouth_frames_sequence and landmarks_sequence and len(mouth_frames_sequence) > 0:
+            pixel_rois = MouthROIExtractor.extract_sequence(mouth_frames_sequence, landmarks_sequence)
+            if pixel_rois.shape[0] > 0:
+                # (T, 1, H, W) -> (1, 1, T, H, W)
+                pixel_seq_t = torch.tensor(pixel_rois, dtype=torch.float32, device=device).permute(1, 0, 2, 3).unsqueeze(0)
+
+        # 3. Forward Pass: Dual-Stream Network
+        dual_viseme_logits = None
+        if vision_seq_t is not None or pixel_seq_t is not None:
+            with torch.inference_mode():
+                dual_out = self.dual_stream_encoder(kinematics_seq=vision_seq_t, pixel_seq=pixel_seq_t)
+                dual_viseme_logits = dual_out["viseme_logits"]
+
+                if dual_out["gating_weights"] is not None:
+                    mean_gate = float(torch.mean(dual_out["gating_weights"]).cpu().item())
+                    dual_stream_info = {
+                        "fusion_mode": "DUAL_STREAM (Kinematics + 3D-CNN Pixels)",
+                        "kinematic_weight": round(mean_gate, 3),
+                        "appearance_weight": round(1.0 - mean_gate, 3),
+                    }
+                else:
+                    dual_stream_info = {
+                        "fusion_mode": "KINEMATICS_ONLY" if vision_seq_t is not None else "PIXELS_ONLY"
+                    }
+
+        # 4. Multimodal Fusion Forward Pass
         with torch.inference_mode():
             output = self.model(
                 audio_feat=audio_t,
@@ -168,9 +210,15 @@ class MultimodalInferenceEngine:
         categories = ["NEEDS_PRACTICE", "APPROXIMATED", "TARGET_MASTERED"]
         predicted_category = categories[cat_idx]
 
-        # Viseme sequence analysis if temporal model predicted visemes
-        if "predicted_visemes" in output:
-            pred_v = output["predicted_visemes"][0].cpu().numpy().tolist()
+        # 5. CTC Beam Search Decoding & Homophene Disambiguation
+        target_viseme_logits = dual_viseme_logits if dual_viseme_logits is not None else output.get("viseme_frame_logits")
+        if target_viseme_logits is not None:
+            visual_word_decoding = self.beam_decoder.decode_beam(
+                target_viseme_logits,
+                target_word=target_phrase,
+            )
+
+            pred_v = visual_word_decoding["greedy_viseme_sequence"]
             if target_phrase:
                 target_v = PhonemeVisemeMapper.phrase_to_visemes(target_phrase)
                 viseme_analysis = PhonemeVisemeMapper.align_viseme_sequences(pred_v, target_v)
@@ -181,7 +229,7 @@ class MultimodalInferenceEngine:
                     "is_visually_verified": True,
                 }
 
-        # Calculate target match if target phrase is provided
+        # 6. Target match if recognized transcript provided
         target_match_info = {}
         if target_phrase and recognized_transcript:
             target_match_info = ArticulationScorer.compute_target_match(
@@ -202,6 +250,8 @@ class MultimodalInferenceEngine:
             "motor_coordination_score": round(motor_score, 4),
             "kinematic_biomarkers": kinematic_biomarkers,
             "viseme_analysis": viseme_analysis,
+            "visual_word_decoding": visual_word_decoding,
+            "dual_stream_info": dual_stream_info,
             "latency_ms": round(elapsed_ms, 2),
             "is_realtime_capable": bool(elapsed_ms < 200.0),
             "device": str(self.device),
