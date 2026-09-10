@@ -16,6 +16,32 @@ import {
   type Category,
 } from "@mediapipe/tasks-vision";
 
+export interface FacialActionUnits {
+  au4BrowLowerer: number;     // 0.0 - 1.0 (Corrugator supercilii - brow furrow / anticipatory tension)
+  au1InnerBrow: number;       // 0.0 - 1.0 (Frontalis pars medialis - inner brow elevation)
+  au2OuterBrow: number;       // 0.0 - 1.0 (Frontalis pars lateralis - outer brow elevation)
+  au6CheekRaiser: number;     // 0.0 - 1.0 (Orbicularis oculi - orbital tension)
+  au14Dimpler: number;        // 0.0 - 1.0 (Buccinator - mouth corner dimpling / contraction)
+  au15LipDepressor: number;   // 0.0 - 1.0 (Depressor anguli oris - lip corner depression)
+  au20LipStretcher: number;   // 0.0 - 1.0 (Risorius / Platysma - horizontal mouth stretching)
+  upperFaceTension: number;   // 0 - 100% composite upper facial tension
+  lowerFaceTension: number;   // 0 - 100% composite lower facial tension
+  motorOverflowIndex: number; // 0 - 100% neuromotor tension index (Das et al., 2022)
+}
+
+export const DEFAULT_ACTION_UNITS: FacialActionUnits = {
+  au4BrowLowerer: 0.06,
+  au1InnerBrow: 0.03,
+  au2OuterBrow: 0.03,
+  au6CheekRaiser: 0.04,
+  au14Dimpler: 0.05,
+  au15LipDepressor: 0.02,
+  au20LipStretcher: 0.06,
+  upperFaceTension: 6,
+  lowerFaceTension: 6,
+  motorOverflowIndex: 6,
+};
+
 export interface ArticulatoryKinematics {
   source: "camera_proxy" | "synthetic_preview" | "mediapipe_neural";
   lipApertureRatio: number;
@@ -25,6 +51,7 @@ export interface ArticulatoryKinematics {
   cue: string;
   postureStatus: string;
   landmarksDetected?: boolean;
+  actionUnits?: FacialActionUnits;
 }
 
 export interface TargetKinematicRange {
@@ -212,6 +239,7 @@ export class FaceMeshTracker {
           cue: "Position your face clearly within camera view",
           postureStatus: "Searching for Face Landmark Target...",
           landmarksDetected: false,
+          actionUnits: DEFAULT_ACTION_UNITS,
         };
       }
     }
@@ -281,6 +309,59 @@ export class FaceMeshTracker {
     else if (puckerScore > 0.35) postureStatus = "Labial Protrusion / Rounding (/u/)";
     else if (mwr > 0.62) postureStatus = "Lateral Corner Retraction (/i/)";
     else if (lar < 0.12) postureStatus = "Bilabial Plosive Seal (/p/, /b/, /m/)";
+
+    // ─── FACIAL ACTION UNITS (FACS) EXTRACTION (Das et al., 2022) ───────────
+    // Blendshapes from MediaPipe Vision Face Landmarker
+    const browDownL = blendshapes?.find((c) => c.categoryName === "browDownLeft")?.score ?? 0;
+    const browDownR = blendshapes?.find((c) => c.categoryName === "browDownRight")?.score ?? 0;
+    const browInnerUp = blendshapes?.find((c) => c.categoryName === "browInnerUp")?.score ?? 0;
+    const browOuterL = blendshapes?.find((c) => c.categoryName === "browOuterUpLeft")?.score ?? 0;
+    const browOuterR = blendshapes?.find((c) => c.categoryName === "browOuterUpRight")?.score ?? 0;
+    const cheekSquintL = blendshapes?.find((c) => c.categoryName === "cheekSquintLeft")?.score ?? 0;
+    const cheekSquintR = blendshapes?.find((c) => c.categoryName === "cheekSquintRight")?.score ?? 0;
+    const dimpleL = blendshapes?.find((c) => c.categoryName === "mouthDimpleLeft")?.score ?? 0;
+    const dimpleR = blendshapes?.find((c) => c.categoryName === "mouthDimpleRight")?.score ?? 0;
+    const frownL = blendshapes?.find((c) => c.categoryName === "mouthFrownLeft")?.score ?? 0;
+    const frownR = blendshapes?.find((c) => c.categoryName === "mouthFrownRight")?.score ?? 0;
+    const stretchL = blendshapes?.find((c) => c.categoryName === "mouthStretchLeft")?.score ?? 0;
+    const stretchR = blendshapes?.find((c) => c.categoryName === "mouthStretchRight")?.score ?? 0;
+
+    // Geometric fallback based on 3D coordinates
+    // Brow Lowerer (AU4): Medial eyebrow (70, 300) vertical distance to nasion (168)
+    const nasion = { x: px(168), y: py(168) };
+    const browL = { x: px(70), y: py(70) };
+    const browR = { x: px(300), y: py(300) };
+    const browDist = (Math.hypot(browL.x - nasion.x, browL.y - nasion.y) + Math.hypot(browR.x - nasion.x, browR.y - nasion.y)) / 2;
+    const browRatio = faceHeightPx > 0 ? browDist / faceHeightPx : 0.08;
+    const geoBrowDown = Math.max(0, Math.min(1.0, (0.085 - browRatio) / 0.038));
+
+    // Lip Stretcher (AU20): Wide mouth expansion without aperture increase
+    const geoStretch = mwr > 0.54 && lar < 0.28 ? Math.min(1.0, (mwr - 0.54) * 4.5) : 0;
+
+    const au4 = Math.max(0, Math.min(1.0, Math.max((browDownL + browDownR) / 2, geoBrowDown * 0.85)));
+    const au1 = Number(browInnerUp.toFixed(3));
+    const au2 = Number(((browOuterL + browOuterR) / 2).toFixed(3));
+    const au6 = Number(((cheekSquintL + cheekSquintR) / 2).toFixed(3));
+    const au14 = Number(((dimpleL + dimpleR) / 2).toFixed(3));
+    const au15 = Number(((frownL + frownR) / 2).toFixed(3));
+    const au20 = Math.max(0, Math.min(1.0, Math.max((stretchL + stretchR) / 2, geoStretch)));
+
+    const upperFaceTension = Math.round(Math.min(100, (au4 * 0.60 + au1 * 0.20 + au6 * 0.20) * 100));
+    const lowerFaceTension = Math.round(Math.min(100, (au20 * 0.50 + au14 * 0.30 + au15 * 0.20) * 100));
+    const motorOverflowIndex = Math.round(Math.min(100, upperFaceTension * 0.45 + lowerFaceTension * 0.55));
+
+    const actionUnits: FacialActionUnits = {
+      au4BrowLowerer: Number(au4.toFixed(2)),
+      au1InnerBrow: au1,
+      au2OuterBrow: au2,
+      au6CheekRaiser: au6,
+      au14Dimpler: au14,
+      au15LipDepressor: au15,
+      au20LipStretcher: Number(au20.toFixed(2)),
+      upperFaceTension,
+      lowerFaceTension,
+      motorOverflowIndex,
+    };
 
     ctx.save();
 
@@ -399,6 +480,31 @@ export class FaceMeshTracker {
       pillY + pillH / 2
     );
 
+    // D. FACS Action Units Visual Indicators (Das et al., 2022)
+    if (actionUnits.au4BrowLowerer > 0.35 || actionUnits.upperFaceTension > 40) {
+      // Draw amber tension bracket across eyebrows (Corrugator AU4)
+      ctx.strokeStyle = "rgba(245, 158, 11, 0.85)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(browL.x - 18, browL.y - 10);
+      ctx.lineTo(browL.x + 18, browL.y - 10);
+      ctx.moveTo(browR.x - 18, browR.y - 10);
+      ctx.lineTo(browR.x + 18, browR.y - 10);
+      ctx.stroke();
+
+      ctx.fillStyle = "#fbbf24";
+      ctx.font = "bold 9px -apple-system, sans-serif";
+      ctx.fillText(`AU4 Brow: ${(actionUnits.au4BrowLowerer * 100).toFixed(0)}%`, nasion.x, nasion.y - 24);
+    }
+
+    if (actionUnits.au20LipStretcher > 0.35) {
+      // Draw cyan/amber tension brackets at oral commissures (Risorius AU20)
+      ctx.strokeStyle = "rgba(6, 182, 212, 0.85)";
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(p61.x - 6, p61.y - 6, 12, 12);
+      ctx.strokeRect(p291.x - 6, p291.y - 6, 12, 12);
+    }
+
     ctx.restore();
 
     return {
@@ -410,6 +516,7 @@ export class FaceMeshTracker {
       cue,
       postureStatus,
       landmarksDetected: true,
+      actionUnits,
     };
   }
 
@@ -524,6 +631,7 @@ export class FaceMeshTracker {
       cue: "Stabilizing facial landmark tracking...",
       postureStatus: "Warming Neural Model...",
       landmarksDetected: false,
+      actionUnits: DEFAULT_ACTION_UNITS,
     };
   }
 
@@ -558,6 +666,11 @@ export class FaceMeshTracker {
       cue,
       postureStatus,
       landmarksDetected: true,
+      actionUnits: {
+        ...DEFAULT_ACTION_UNITS,
+        au4BrowLowerer: Number((0.08 + Math.abs(Math.sin(timeMs / 800)) * 0.12).toFixed(2)),
+        au20LipStretcher: Number((0.08 + Math.abs(Math.cos(timeMs / 700)) * 0.15).toFixed(2)),
+      },
     };
   }
 

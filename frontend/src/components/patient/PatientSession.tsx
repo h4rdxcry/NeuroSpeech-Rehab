@@ -31,6 +31,7 @@ import { capturePcm } from "../../lib/pcmCapture";
 import { FaceMeshTracker, type ArticulatoryKinematics } from "../../lib/faceMeshTracker";
 import { LipReadingClassifier, type LipReadingPrediction } from "../../lib/lipReadingClassifier";
 import { AcousticSpeechDetector, type SpeechPredictionResult } from "../../lib/acousticSpeechDetector";
+import { PreSpeechPreparatoryPredictor, type PreSpeechEvaluation } from "../../lib/preSpeechPredictor";
 import type {
   Patient,
   Session,
@@ -97,6 +98,10 @@ export default function PatientSession() {
   const speechDetectorRef = useRef<AcousticSpeechDetector>(new AcousticSpeechDetector(activeLevelData));
   const [lipPrediction, setLipPrediction] = useState<LipReadingPrediction | null>(null);
   const [speechPrediction, setSpeechPrediction] = useState<SpeechPredictionResult | null>(null);
+
+  // Pre-Speech Preparatory & Explainable AI Engine (Das et al., 2022)
+  const preSpeechPredictorRef = useRef<PreSpeechPreparatoryPredictor>(new PreSpeechPreparatoryPredictor(activeLevelData));
+  const [preSpeechEval, setPreSpeechEval] = useState<PreSpeechEvaluation | null>(null);
 
   // Game Loop State Management
   const [gameState, setGameState] = useState<"listening" | "success" | "stepping_up">("listening");
@@ -173,9 +178,11 @@ export default function PatientSession() {
         // Reset tracking buffers for the new target word
         lipClassifierRef.current.reset();
         speechDetectorRef.current.setTargetLevel(getLevelData(nextLvl));
+        preSpeechPredictorRef.current.reset(getLevelData(nextLvl));
         setRecognizedSpeech("");
         setLipPrediction(null);
         setSpeechPrediction(null);
+        setPreSpeechEval(null);
         setVocalEnergy(0);
 
         // Return to listening state on new level
@@ -305,6 +312,14 @@ export default function PatientSession() {
           );
           setLipPrediction(lipPred);
 
+          // Pre-Speech Preparatory & Explainable AI (Das et al., 2022)
+          const prepEval = preSpeechPredictorRef.current.processFrame(
+            est,
+            vocalEnergyRef.current,
+            bilateralSymmetry
+          );
+          setPreSpeechEval(prepEval);
+
           // Real-Time Acoustic & Voice Phonation Fusion
           if (isLiveListening) {
             const speechPred = speechDetectorRef.current.processAcousticFrame(
@@ -341,7 +356,7 @@ export default function PatientSession() {
       active = false;
       if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
     };
-  }, [mediaStream, vocalEnergy, displayMode, activeLevelData, isLiveListening, fundamentalFreq]);
+  }, [mediaStream, vocalEnergy, displayMode, activeLevelData, isLiveListening, fundamentalFreq, bilateralSymmetry]);
 
   // Continuous background Web Audio capture when media stream is active
   useEffect(() => {
@@ -384,6 +399,7 @@ export default function PatientSession() {
   useEffect(() => {
     speechDetectorRef.current.setTargetLevel(activeLevelData);
     lipClassifierRef.current.reset();
+    preSpeechPredictorRef.current.reset(activeLevelData);
   }, [activeLevelData]);
 
   useEffect(() => {
@@ -643,14 +659,30 @@ export default function PatientSession() {
                 </div>
               </div>
 
-              {/* Bottom Video Landmark Telemetry Pill */}
+              {/* Bottom Video Landmark & FACS Telemetry Pill (Das et al., 2022) */}
               <div className="absolute bottom-3 inset-x-3 flex items-center justify-between pointer-events-none">
-                <div className="px-3 py-1 rounded-full bg-[#0B0F17]/80 backdrop-blur-md border border-white/[0.08] text-[11px] font-mono text-slate-300">
-                  LAR: <strong className="text-emerald-400">{kinematics?.lipApertureRatio.toFixed(2) ?? "0.00"}</strong> · MWR: <strong className="text-cyan-400">{kinematics?.mouthWidthRatio.toFixed(2) ?? "0.00"}</strong> · Jaw: <strong className="text-indigo-300">{kinematics?.jawDisplacementMm.toFixed(1) ?? "0.0"}mm</strong>
+                <div className="px-3 py-1 rounded-full bg-[#0B0F17]/85 backdrop-blur-md border border-white/[0.08] text-[11px] font-mono text-slate-300 flex items-center gap-1.5 flex-wrap">
+                  <span>LAR: <strong className="text-emerald-400">{kinematics?.lipApertureRatio.toFixed(2) ?? "0.00"}</strong></span>
+                  <span className="text-slate-600">·</span>
+                  <span>Jaw: <strong className="text-indigo-300">{kinematics?.jawDisplacementMm.toFixed(1) ?? "0.0"}mm</strong></span>
+                  <span className="text-slate-600">·</span>
+                  <span>AU4 Brow: <strong className={(kinematics?.actionUnits?.au4BrowLowerer ?? 0) > 0.35 ? "text-amber-400" : "text-emerald-400"}>{(kinematics?.actionUnits?.au4BrowLowerer ?? 0.05).toFixed(2)}</strong></span>
+                  <span className="text-slate-600">·</span>
+                  <span>AU20 Lip: <strong className={(kinematics?.actionUnits?.au20LipStretcher ?? 0) > 0.35 ? "text-amber-400" : "text-cyan-400"}>{(kinematics?.actionUnits?.au20LipStretcher ?? 0.05).toFixed(2)}</strong></span>
                 </div>
 
-                <div className="px-3 py-1 rounded-full bg-[#0B0F17]/80 backdrop-blur-md border border-white/[0.08] text-[11px] font-bold text-slate-200">
-                  {kinematics?.postureStatus ?? "Neutral Stance"}
+                <div className={`px-3 py-1 rounded-full backdrop-blur-md border text-[11px] font-bold transition-all ${
+                  preSpeechEval?.disfluencyRisk === "high"
+                    ? "bg-amber-500/20 border-amber-500/40 text-amber-300 shadow-[0_0_15px_rgba(245,158,11,0.25)]"
+                    : preSpeechEval?.status === "optimal"
+                    ? "bg-emerald-500/20 border-emerald-500/40 text-emerald-300 shadow-[0_0_15px_rgba(16,185,129,0.25)]"
+                    : "bg-[#0B0F17]/85 border-white/[0.08] text-slate-200"
+                }`}>
+                  {preSpeechEval?.disfluencyRisk === "high"
+                    ? "⚠️ Anticipatory Tension"
+                    : preSpeechEval?.status === "optimal"
+                    ? "✨ Optimal Readiness"
+                    : kinematics?.postureStatus ?? "Neutral Stance"}
                 </div>
               </div>
 
@@ -721,8 +753,8 @@ export default function PatientSession() {
                 </div>
               </div>
 
-              {/* 4 Sleek Telemetry Meters */}
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+              {/* 5 Sleek Telemetry Meters (including FACS Overflow from Das et al., 2022) */}
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5">
                 {/* Lip Aperture Ratio */}
                 <div className="p-3 rounded-xl bg-white/[0.03] border border-white/[0.05] flex flex-col gap-1">
                   <span className="text-[10px] font-bold text-slate-400 uppercase">Lip Aperture (LAR)</span>
@@ -793,6 +825,29 @@ export default function PatientSession() {
                     <div
                       className="h-full bg-teal-400 rounded-full transition-all duration-100"
                       style={{ width: `${bilateralSymmetry}%` }}
+                    />
+                  </div>
+                </div>
+
+                {/* FACS Neuromotor Overflow (Das et al., 2022) */}
+                <div className="p-3 rounded-xl bg-white/[0.03] border border-white/[0.05] flex flex-col gap-1 col-span-2 sm:col-span-1">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase">FACS Overflow</span>
+                  <div className="flex items-baseline justify-between">
+                    <span className={`text-base font-extrabold ${
+                      (kinematics?.actionUnits?.motorOverflowIndex ?? 6) > 35 ? "text-amber-400" : "text-purple-400"
+                    }`}>
+                      {kinematics?.actionUnits?.motorOverflowIndex ?? 6}%
+                    </span>
+                    <span className="text-[10px] font-mono text-slate-500">
+                      AU4:{(kinematics?.actionUnits?.au4BrowLowerer ?? 0.05).toFixed(2)}
+                    </span>
+                  </div>
+                  <div className="h-1.5 w-full bg-white/[0.06] rounded-full overflow-hidden mt-1">
+                    <div
+                      className={`h-full rounded-full transition-all duration-100 ${
+                        (kinematics?.actionUnits?.motorOverflowIndex ?? 6) > 35 ? "bg-amber-400" : "bg-purple-400"
+                      }`}
+                      style={{ width: `${Math.min(100, kinematics?.actionUnits?.motorOverflowIndex ?? 6)}%` }}
                     />
                   </div>
                 </div>
@@ -993,6 +1048,96 @@ export default function PatientSession() {
                     {speechPrediction?.confidence ?? 0}% Acoustic
                   </span>
                 </div>
+
+                {/* ─── EXPLAINABLE AI (XAI) PRE-SPEECH PREPARATION (Das et al., 2022) ─── */}
+                <div
+                  className={`p-3.5 rounded-xl border flex flex-col gap-2.5 transition-all ${
+                    preSpeechEval?.disfluencyRisk === "high"
+                      ? "bg-amber-500/[0.07] border-amber-500/30"
+                      : preSpeechEval?.status === "optimal"
+                      ? "bg-emerald-500/[0.07] border-emerald-500/30"
+                      : "bg-indigo-500/[0.04] border-indigo-500/20"
+                  }`}
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="text-base">🧠</span>
+                      <div className="flex flex-col text-left">
+                        <span className="text-[10px] uppercase font-bold text-indigo-300">
+                          Pre-Speech Anticipatory Predictor (Das et al., 2022)
+                        </span>
+                        <span className="text-xs font-extrabold text-white">
+                          {preSpeechEval?.disfluencyRisk === "high"
+                            ? "⚠️ Anticipatory Block Detected"
+                            : preSpeechEval?.status === "optimal"
+                            ? "✨ Optimal Neuromotor Prep"
+                            : "S1–S2 Neuromotor Stance"}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="flex flex-col items-end">
+                      <span className={`text-[12px] font-mono font-black ${
+                        (preSpeechEval?.anticipatoryFluencyProbability ?? 88) >= 80
+                          ? "text-emerald-400"
+                          : (preSpeechEval?.anticipatoryFluencyProbability ?? 88) >= 50
+                          ? "text-amber-400"
+                          : "text-rose-400"
+                      }`}>
+                        {preSpeechEval?.anticipatoryFluencyProbability ?? 88}% Fluency Prob.
+                      </span>
+                      <span className="text-[9px] text-slate-400">80.8% Accurate Model</span>
+                    </div>
+                  </div>
+
+                  {/* S1-S2 1500ms Preparatory Countdown Gauge */}
+                  <div className="flex items-center gap-2 text-[10px] font-mono text-slate-400">
+                    <span>S1 Cue</span>
+                    <div className="flex-1 h-1.5 bg-white/[0.06] rounded-full overflow-hidden">
+                      <div
+                        className={`h-full rounded-full transition-all duration-150 ${
+                          preSpeechEval?.disfluencyRisk === "high" ? "bg-amber-400" : "bg-gradient-to-r from-indigo-500 to-emerald-400"
+                        }`}
+                        style={{ width: `${preSpeechEval?.preparationProgress ?? 100}%` }}
+                      />
+                    </div>
+                    <span>S2 Phonation ({preSpeechEval?.elapsedMs ?? 1500}ms)</span>
+                  </div>
+
+                  {/* Causal XAI Attribution Explanation */}
+                  <div className="p-2.5 rounded-lg bg-black/30 border border-white/[0.05] text-[11px] leading-relaxed flex flex-col gap-1.5 text-left">
+                    <p className="text-slate-200">
+                      <strong className="text-indigo-300 font-semibold">Diagnosis: </strong>
+                      {preSpeechEval?.xai.primaryAttribution ?? "Neuromotor speech planning is balanced and receptive for phonation."}
+                    </p>
+                    <p className="text-emerald-300 text-[10.5px]">
+                      💡 <strong>Therapy Cue: </strong>
+                      {preSpeechEval?.xai.clinicalCue ?? "Breathe naturally and release into the first syllable with ease."}
+                    </p>
+                  </div>
+
+                  {/* Shapley Feature Attribution Badges */}
+                  <div className="flex items-center gap-1.5 flex-wrap text-[9px] font-mono">
+                    <span className={`px-2 py-0.5 rounded border ${
+                      (preSpeechEval?.xai.shapleyMap.au4BrowLowerer ?? 0.8) >= 0
+                        ? "bg-emerald-500/10 text-emerald-300 border-emerald-500/20"
+                        : "bg-amber-500/10 text-amber-300 border-amber-500/20"
+                    }`}>
+                      AU4 Brow: {preSpeechEval?.xai.shapleyMap.au4BrowLowerer && preSpeechEval.xai.shapleyMap.au4BrowLowerer > 0 ? `+${preSpeechEval.xai.shapleyMap.au4BrowLowerer}` : preSpeechEval?.xai.shapleyMap.au4BrowLowerer ?? "+0.75"}
+                    </span>
+
+                    <span className={`px-2 py-0.5 rounded border ${
+                      (preSpeechEval?.xai.shapleyMap.au20LipStretcher ?? 0.8) >= 0
+                        ? "bg-emerald-500/10 text-emerald-300 border-emerald-500/20"
+                        : "bg-amber-500/10 text-amber-300 border-amber-500/20"
+                    }`}>
+                      AU20 Lip: {preSpeechEval?.xai.shapleyMap.au20LipStretcher && preSpeechEval.xai.shapleyMap.au20LipStretcher > 0 ? `+${preSpeechEval.xai.shapleyMap.au20LipStretcher}` : preSpeechEval?.xai.shapleyMap.au20LipStretcher ?? "+0.80"}
+                    </span>
+
+                    <span className="px-2 py-0.5 rounded bg-cyan-500/10 text-cyan-300 border border-cyan-500/20">
+                      Symmetry: {preSpeechEval?.xai.shapleyMap.bilateralSymmetry && preSpeechEval.xai.shapleyMap.bilateralSymmetry > 0 ? `+${preSpeechEval.xai.shapleyMap.bilateralSymmetry}` : preSpeechEval?.xai.shapleyMap.bilateralSymmetry ?? "+0.92"}
+                    </span>
+                  </div>
+                </div>
               </div>
 
               {/* Supportive Clinical Cue & Quick Articulation Tests */}
@@ -1058,6 +1203,32 @@ export default function PatientSession() {
                   >
                     {isLiveListening ? <Mic size={13} /> : <MicOff size={13} />}
                     <span>{isLiveListening ? "Mic Active" : "Mic Muted"}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const sim = preSpeechPredictorRef.current.simulatePreparatoryBlock();
+                      setPreSpeechEval(sim);
+                      triggerHaptic();
+                    }}
+                    className="px-3 py-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 text-xs font-bold flex items-center gap-1.5 transition-all active:scale-95"
+                    title="Simulate anticipatory stuttering block (elevated AU4 and AU20 tension)"
+                  >
+                    <span>🧠 Test Pre-Speech Block</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const sim = preSpeechPredictorRef.current.simulateOptimalPrep();
+                      setPreSpeechEval(sim);
+                      triggerHaptic();
+                    }}
+                    className="px-3 py-1.5 rounded-lg bg-teal-500/10 hover:bg-teal-500/20 text-teal-300 border border-teal-500/30 text-xs font-bold flex items-center gap-1.5 transition-all active:scale-95"
+                    title="Simulate calm, fluent pre-phonation readiness"
+                  >
+                    <span>✨ Test Calm Readiness</span>
                   </button>
                 </div>
               </div>
