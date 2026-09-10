@@ -1,6 +1,0 @@
-﻿dist
-android
-node_modules
-playwright-report
-test-results
-*.tsbuildinfo
