@@ -174,7 +174,7 @@ class KinematicsEngine:
     @classmethod
     def extract_trajectory(cls, landmark_sequence: List[List[List[float]]]) -> np.ndarray:
         """Extracts a continuous (T, 40) trajectory array from a sequence of frames."""
-        if not landmark_sequence:
+        if landmark_sequence is None or len(landmark_sequence) == 0:
             return np.zeros((0, 40), dtype=np.float32)
         trajectory = [cls.extract_kinematic_frame(frame) for frame in landmark_sequence]
         return np.asarray(trajectory, dtype=np.float32)

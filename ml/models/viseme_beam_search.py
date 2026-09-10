@@ -36,18 +36,79 @@ CLINICAL_DRILL_VOCABULARY = [
 ]
 
 
+class CharacterNGramLanguageModel:
+    """Statistical character and subword N-Gram Language Model with Laplace smoothing.
+    
+    Provides language likelihood priors for speech rehabilitation vocabulary (Tamil and English)
+    to statistically resolve homophene ambiguities in visual speech recognition.
+    """
+
+    def __init__(self, corpus: Optional[List[str]] = None, smoothing: float = 1.0):
+        self.smoothing = float(smoothing)
+        self.unigrams: Dict[str, int] = {}
+        self.bigrams: Dict[Tuple[str, str], int] = {}
+        self.word_counts: Dict[str, int] = {}
+        self.total_unigrams = 0
+        self.vocab_chars = set()
+
+        training_corpus = corpus or CLINICAL_DRILL_VOCABULARY
+        self.train(training_corpus)
+
+    def train(self, corpus: List[str]) -> None:
+        """Accumulates unigram, bigram, and word frequency counts from text corpus."""
+        for text in corpus:
+            clean = text.strip()
+            if not clean:
+                continue
+            self.word_counts[clean] = self.word_counts.get(clean, 0) + 1
+            chars = ["<BOS>"] + list(clean) + ["<EOS>"]
+            for i in range(len(chars) - 1):
+                c1, c2 = chars[i], chars[i + 1]
+                self.vocab_chars.add(c1)
+                self.vocab_chars.add(c2)
+                self.unigrams[c1] = self.unigrams.get(c1, 0) + 1
+                self.total_unigrams += 1
+                pair = (c1, c2)
+                self.bigrams[pair] = self.bigrams.get(pair, 0) + 1
+
+    def score_word(self, word: str) -> float:
+        """Computes normalized log-likelihood of word under bigram language model."""
+        clean = word.strip()
+        if not clean:
+            return -10.0
+
+        chars = ["<BOS>"] + list(clean) + ["<EOS>"]
+        v_size = max(len(self.vocab_chars), 10)
+        log_prob = 0.0
+
+        for i in range(len(chars) - 1):
+            c1, c2 = chars[i], chars[i + 1]
+            pair_count = self.bigrams.get((c1, c2), 0)
+            c1_count = self.unigrams.get(c1, 0)
+            # Additive Laplace smoothing
+            cond_prob = (pair_count + self.smoothing) / (c1_count + self.smoothing * v_size)
+            log_prob += np.log(cond_prob)
+
+        # Length-normalized log probability
+        return float(log_prob / max(len(clean), 1))
+
+
 class VisemeBeamSearchDecoder:
-    """Decodes viseme logits using CTC Beam Search and resolves homophene clusters."""
+    """Decodes viseme logits using CTC Beam Search with Language Model rescoring and homophene disambiguation."""
 
     def __init__(
         self,
         vocabulary: Optional[List[str]] = None,
         beam_width: int = 8,
         blank_idx: int = VisemeClass.NEUTRAL_REST,
+        language_model: Optional[CharacterNGramLanguageModel] = None,
+        lm_weight: float = 0.6,
     ):
         self.vocabulary = vocabulary or CLINICAL_DRILL_VOCABULARY
         self.beam_width = beam_width
         self.blank_idx = blank_idx
+        self.lm_weight = float(lm_weight)
+        self.language_model = language_model or CharacterNGramLanguageModel(self.vocabulary)
 
         # Precompute canonical viseme sequences for vocabulary
         self.vocab_visemes: Dict[str, List[int]] = {}
@@ -98,8 +159,8 @@ class VisemeBeamSearchDecoder:
             if not greedy_collapsed or greedy_collapsed[-1] != v:
                 greedy_collapsed.append(v)
 
-        # Score all candidate vocabulary words using CTC alignment probability
-        candidate_scores: List[Tuple[str, float, float]] = []
+        # Score all candidate vocabulary words using CTC alignment probability + LM likelihood
+        candidate_scores: List[Tuple[str, float, float, float]] = []
 
         for cand_word, target_v_seq in self.vocab_visemes.items():
             # Align cand_word visemes with observed frame probabilities
@@ -109,17 +170,21 @@ class VisemeBeamSearchDecoder:
             align = PhonemeVisemeMapper.align_viseme_sequences(greedy_collapsed, target_v_seq)
             sim_bonus = align["viseme_match_score"] * 3.0
 
+            # Language Model likelihood prior
+            lm_score = self.language_model.score_word(cand_word)
+            lm_bonus = self.lm_weight * lm_score
+
             # Prior bonus if candidate is the target exercise
             prior_bonus = target_bias if (target_word and cand_word.strip() == target_word.strip()) else 0.0
 
-            total_score = ctc_log_prob + sim_bonus + prior_bonus
-            candidate_scores.append((cand_word, total_score, align["viseme_match_score"]))
+            total_score = ctc_log_prob + sim_bonus + lm_bonus + prior_bonus
+            candidate_scores.append((cand_word, total_score, align["viseme_match_score"], lm_score))
 
         # Sort candidates descending by score
         candidate_scores.sort(key=lambda x: x[1], reverse=True)
         top_candidates = candidate_scores[:self.beam_width]
 
-        best_word, best_raw_score, best_sim = top_candidates[0]
+        best_word, best_raw_score, best_sim, best_lm = top_candidates[0]
 
         # Convert score to calibrated confidence [0.0, 1.0]
         # Normalize top score against runner-up
@@ -137,10 +202,16 @@ class VisemeBeamSearchDecoder:
             "best_word": best_word,
             "word_confidence": final_conf,
             "is_target_word_matched": is_match,
+            "language_model_score": round(best_lm, 3),
             "greedy_viseme_sequence": greedy_collapsed,
             "homophene_candidates": [
-                {"word": word, "score": round(score, 2), "viseme_similarity": round(sim, 4)}
-                for word, score, sim in top_candidates
+                {
+                    "word": word,
+                    "score": round(score, 2),
+                    "viseme_similarity": round(sim, 4),
+                    "lm_score": round(lm, 3),
+                }
+                for word, score, sim, lm in top_candidates
             ],
         }
 

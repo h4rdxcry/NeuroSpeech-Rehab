@@ -15,7 +15,7 @@ from ml.models.viseme_classifier import (
 )
 from ml.models.mouth_3d_cnn import MouthVisual3DCNN
 from ml.models.dual_stream_visual_encoder import DualStreamVisualSpeechEncoder
-from ml.models.viseme_beam_search import VisemeBeamSearchDecoder
+from ml.models.viseme_beam_search import VisemeBeamSearchDecoder, CharacterNGramLanguageModel
 
 __all__ = [
     "FacialEMGEncoder",
@@ -31,4 +31,6 @@ __all__ = [
     "MouthVisual3DCNN",
     "DualStreamVisualSpeechEncoder",
     "VisemeBeamSearchDecoder",
+    "CharacterNGramLanguageModel",
 ]
+

@@ -28,6 +28,7 @@ class ClinicalRehabService:
         target_vowel_type: str = "default",
         landmarks_sequence: Optional[List[List[List[float]]]] = None,
         mouth_frames_sequence: Optional[List[Any]] = None,
+        patient_baseline: Optional[Dict[str, Any]] = None,
         emg_features: Optional[List[float]] = None,
         eeg_features: Optional[List[float]] = None,
         audio_features: Optional[List[float]] = None,
@@ -88,6 +89,7 @@ class ClinicalRehabService:
             eeg_features=eeg_features,
             landmarks_sequence=landmarks_sequence,
             mouth_frames_sequence=mouth_frames_sequence,
+            patient_baseline=patient_baseline,
             target_phrase=target_phrase,
             recognized_transcript=recognized_transcript,
             target_vowel_type=target_vowel_type,
@@ -111,6 +113,19 @@ class ClinicalRehabService:
             viseme_match_score=viseme_score,
             dtw_trajectory_score=dtw_score,
         )
+
+        # Incorporate FACS Action Unit clinical cues if available
+        if "feedback_cues" not in composite_summary:
+            composite_summary["feedback_cues"] = []
+        if "kinematic_biomarkers" in ai_pred and "action_units" in ai_pred["kinematic_biomarkers"]:
+            au_cues = ai_pred["kinematic_biomarkers"]["action_units"].get("clinical_cues", [])
+            for cue in au_cues:
+                if cue not in composite_summary["feedback_cues"]:
+                    composite_summary["feedback_cues"].append(cue)
+
+        # Include patient-calibrated excursion in composite summary if present
+        if "kinematic_biomarkers" in ai_pred and "calibrated_excursion" in ai_pred["kinematic_biomarkers"]:
+            composite_summary["calibrated_excursion"] = ai_pred["kinematic_biomarkers"]["calibrated_excursion"]
 
         # Adjust game stars / thresholds based on difficulty setting
         thresholds = {

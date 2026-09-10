@@ -16,6 +16,8 @@ from ml.models.dual_stream_visual_encoder import DualStreamVisualSpeechEncoder
 from ml.models.viseme_beam_search import VisemeBeamSearchDecoder
 from ml.pipelines.kinematics_engine import KinematicsEngine
 from ml.pipelines.mouth_roi_extractor import MouthROIExtractor
+from ml.pipelines.landmark_filter import OneEuroFilter, PatientBaselineCalibrator
+from ml.pipelines.action_unit_extractor import ActionUnitExtractor
 
 
 class MultimodalInferenceEngine:
@@ -32,6 +34,8 @@ class MultimodalInferenceEngine:
         self.model: Optional[MultimodalFusionModel] = None
         self.dual_stream_encoder: Optional[DualStreamVisualSpeechEncoder] = None
         self.beam_decoder: Optional[VisemeBeamSearchDecoder] = None
+        self.landmark_filter = OneEuroFilter(min_cutoff=1.0, beta=0.007)
+        self.baseline_calibrator = PatientBaselineCalibrator()
         self.is_ready = False
         self._load_lock = threading.Lock()
 
@@ -103,12 +107,13 @@ class MultimodalInferenceEngine:
         eeg_features: Optional[List[float]] = None,
         landmarks_sequence: Optional[List[List[List[float]]]] = None,
         mouth_frames_sequence: Optional[List[Any]] = None,
+        patient_baseline: Optional[Dict[str, Any]] = None,
         target_phrase: Optional[str] = None,
         recognized_transcript: Optional[str] = None,
         target_vowel_type: str = "default",
         active_modalities: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
-        """Executes low-latency multimodal prediction with dual-stream visual speech and beam search."""
+        """Executes low-latency multimodal prediction with 1€ filter, FACS Action Units, and beam search."""
         t0 = time.perf_counter()
 
         if not self.is_ready or self.model is None or self.dual_stream_encoder is None or self.beam_decoder is None:
@@ -132,9 +137,12 @@ class MultimodalInferenceEngine:
         visual_word_decoding: Dict[str, Any] = {}
         dual_stream_info: Dict[str, Any] = {}
 
-        # 1. Kinematics processing if landmarks sequence provided
+        # 1. Kinematics & FACS processing if landmarks sequence provided
+        filtered_landmarks = None
         if landmarks_sequence and len(landmarks_sequence) > 0:
-            trajectory = KinematicsEngine.extract_trajectory(landmarks_sequence)
+            # Apply adaptive 1€ filter to eliminate high-frequency webcam jitter
+            filtered_landmarks = self.landmark_filter.filter_sequence(landmarks_sequence)
+            trajectory = KinematicsEngine.extract_trajectory(filtered_landmarks)
             t_len = trajectory.shape[0]
 
             if t_len > 0:
@@ -148,6 +156,12 @@ class MultimodalInferenceEngine:
                 dtw_dist, dtw_sim = KinematicsEngine.fast_dtw_distance(trajectory, canonical)
                 mean_symmetry = float(np.mean(trajectory[:, 20])) if t_len > 0 else 1.0
 
+                # Extract continuous FACS Action Units (AU10, AU12, AU14, AU15, AU17, AU18, AU20, AU25, AU26)
+                action_units_data = ActionUnitExtractor.extract_sequence(
+                    filtered_landmarks,
+                    baseline_profile=patient_baseline,
+                )
+
                 kinematic_biomarkers = {
                     "trajectory_frames": t_len,
                     "movement_smoothness": round(smoothness, 4),
@@ -156,7 +170,20 @@ class MultimodalInferenceEngine:
                     "dtw_trajectory_similarity": dtw_sim,
                     "bilateral_symmetry": round(mean_symmetry, 4),
                     "is_kinematically_sound": bool(smoothness >= 0.35 and dtw_sim >= 0.50),
+                    "action_units": action_units_data,
                 }
+
+                # Compute patient baseline-calibrated excursion if baseline profile provided
+                if patient_baseline:
+                    raw_dims = {
+                        "lip_aperture": float(np.mean(trajectory[:, 0])),
+                        "mouth_width": float(np.mean(trajectory[:, 1])),
+                        "bilateral_symmetry": mean_symmetry,
+                    }
+                    calibrated = self.baseline_calibrator.compute_calibrated_excursion(
+                        raw_dims, profile=patient_baseline
+                    )
+                    kinematic_biomarkers["calibrated_excursion"] = calibrated
 
         elif vision_features is not None:
             if len(vision_features) in (16, 40):
@@ -165,7 +192,8 @@ class MultimodalInferenceEngine:
         # 2. Dual-Stream Pixel Appearance Processing if mouth frames provided
         pixel_seq_t = None
         if mouth_frames_sequence and landmarks_sequence and len(mouth_frames_sequence) > 0:
-            pixel_rois = MouthROIExtractor.extract_sequence(mouth_frames_sequence, landmarks_sequence)
+            target_lm = filtered_landmarks if filtered_landmarks is not None else landmarks_sequence
+            pixel_rois = MouthROIExtractor.extract_sequence(mouth_frames_sequence, target_lm)
             if pixel_rois.shape[0] > 0:
                 # (T, 1, H, W) -> (1, 1, T, H, W)
                 pixel_seq_t = torch.tensor(pixel_rois, dtype=torch.float32, device=device).permute(1, 0, 2, 3).unsqueeze(0)
