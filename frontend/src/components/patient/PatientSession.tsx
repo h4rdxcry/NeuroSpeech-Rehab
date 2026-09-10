@@ -306,7 +306,7 @@ export default function PatientSession() {
       return mediaRef.current;
     }
 
-    // Modern mobile browsers strictly restrict getUserMedia to secure contexts (HTTPS or localhost)
+    // Modern PC browsers require getUserMedia to run in secure contexts (HTTPS or localhost)
     const isSecureContext = typeof window !== "undefined" && (
       window.isSecureContext ||
       window.location.hostname === "localhost" ||
@@ -316,21 +316,27 @@ export default function PatientSession() {
 
     if (!isSecureContext) {
       setMediaError(
-        "Mobile browsers require a secure HTTPS link to access camera permissions. Tap '🎬 Test Video' below for immediate tracking, or access via the HTTPS tunnel URL."
+        "Browsers require a secure HTTPS or localhost context to access webcam and microphone hardware. Click '🎬 Test Video' below for instant tracking, or access via your secure domain."
       );
       return null;
     }
 
     if (!navigator.mediaDevices?.getUserMedia) {
-      setMediaError("This browser environment does not support camera capture. Switch to '🎬 Test Video' mode.");
+      setMediaError("This browser environment does not support media capture. Switch to '🎬 Test Video' mode.");
       return null;
     }
 
-    // Progressive Multi-Tier Fallback Ladder (avoids OverconstrainedError on varied mobile devices)
+    // Desktop PC Web Workstation camera constraint ladder (supports HD/Full HD desktop webcams)
     const constraintTiers: MediaStreamConstraints[] = [
-      { video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } }, audio: true },
+      {
+        video: { width: { ideal: 1280, min: 640 }, height: { ideal: 720, min: 480 }, frameRate: { ideal: 30, max: 60 } },
+        audio: { echoCancellation: true, noiseSuppression: true, sampleRate: 16000 },
+      },
+      {
+        video: { width: { ideal: 640 }, height: { ideal: 480 } },
+        audio: true,
+      },
       { video: true, audio: true },
-      { video: { facingMode: "user" } }, // Fallback to video-only if mic is unavailable or blocked
       { video: true },
     ];
 
@@ -349,12 +355,12 @@ export default function PatientSession() {
     if (!stream) {
       const errName = (lastError as { name?: string })?.name;
       if (lastError instanceof DOMException && (errName === "NotAllowedError" || errName === "PermissionDeniedError")) {
-        setMediaError("Camera permission was denied in browser settings. You can enable it in site settings or tap '🎬 Test Video' for zero-permission tracking.");
+        setMediaError("Camera permission was denied in browser settings. You can enable it in the address bar (lock icon) or click '🎬 Test Video' for zero-permission tracking.");
       } else if (errName === "NotFoundError" || errName === "DevicesNotFoundError") {
-        setMediaError("No camera found on this device. Switching to '🎬 Test Video' mode.");
+        setMediaError("No webcam hardware detected on this PC. Switching to '🎬 Test Video' mode.");
         setDisplayMode("sample");
       } else {
-        setMediaError("Unable to access camera hardware. Tap '🎬 Test Video' to test live tracking with our clinical sample.");
+        setMediaError("Unable to access PC camera hardware. Click '🎬 Test Video' to test live tracking with our clinical benchmark video.");
       }
       return null;
     }
@@ -700,6 +706,38 @@ export default function PatientSession() {
     window.speechSynthesis.speak(utter);
   }, [customPhrase]);
 
+  // Desktop PC Keyboard Shortcuts (Space to Record/Stop, D for 3D Demo, G for Game, Escape to Release)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Don't trigger if user is actively typing in an input or textarea
+      if (
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement ||
+        (e.target as HTMLElement)?.isContentEditable
+      ) {
+        return;
+      }
+
+      if (e.code === "Space") {
+        e.preventDefault();
+        if (connectionState === "streaming") {
+          void finishAttempt();
+        } else if (!busy && !sessionFinished) {
+          void startAttempt();
+        }
+      } else if (e.key === "d" || e.key === "D") {
+        setDisplayMode((prev) => (prev === "avatar" ? "camera" : "avatar"));
+      } else if (e.key === "g" || e.key === "G") {
+        setIsGameMode((prev) => !prev);
+      } else if (e.key === "Escape") {
+        releaseMedia();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [connectionState, busy, sessionFinished, finishAttempt, releaseMedia]);
+
   // Active rehabilitation stage
   const rawStage = sessionFinished
     ? "completed"
@@ -787,9 +825,18 @@ export default function PatientSession() {
           ))}
         </div>
 
-        <div className="hidden md:flex items-center gap-2 text-on-surface-variant text-xs font-medium">
-          <span className="inline-block w-2 h-2 rounded-full bg-tertiary-container animate-ping" />
-          <span>Neural Multimodal Stream: Synced (12ms)</span>
+        <div className="hidden lg:flex items-center gap-3 text-on-surface-variant text-xs font-medium">
+          <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-surface-container-high/60 border border-outline-variant/30 text-[11px]">
+            <span className="font-bold text-primary">Desktop Hotkeys:</span>
+            <span><kbd className="px-1.5 py-0.5 rounded bg-surface-container-lowest text-on-surface font-mono text-[10px] shadow-sm">Space</kbd> Start/Stop</span>
+            <span><kbd className="px-1.5 py-0.5 rounded bg-surface-container-lowest text-on-surface font-mono text-[10px] shadow-sm">D</kbd> 3D Avatar</span>
+            <span><kbd className="px-1.5 py-0.5 rounded bg-surface-container-lowest text-on-surface font-mono text-[10px] shadow-sm">G</kbd> Game</span>
+            <span><kbd className="px-1.5 py-0.5 rounded bg-surface-container-lowest text-on-surface font-mono text-[10px] shadow-sm">Esc</kbd> Reset</span>
+          </div>
+          <div className="flex items-center gap-1.5 text-[11px]">
+            <span className="inline-block w-2 h-2 rounded-full bg-tertiary-container animate-ping" />
+            <span>Multimodal Sync</span>
+          </div>
         </div>
       </div>
 

@@ -65,10 +65,10 @@ export default function WorkspaceLayout({ mode, children }: { mode: keyof typeof
                 <div className="flex items-center gap-2">
                   <span className="font-outfit text-xl font-bold tracking-tight text-on-surface">NeuroSpeech</span>
                   <span className="hidden sm:inline-flex px-2 py-0.5 rounded-full bg-primary-fixed text-primary text-[10px] font-bold tracking-wider uppercase border border-primary-fixed-dim/60">
-                    Gemini Neural v2.4
+                    Research PC Workstation
                   </span>
                 </div>
-                <span className="brand-subtitle font-manrope">AI-Based Multimodal Speech Rehabilitation</span>
+                <span className="brand-subtitle font-manrope">AI-Based Multimodal Speech Rehabilitation · EEG + sEMG + Facial Tracking</span>
               </div>
             </NavLink>
 
@@ -78,7 +78,7 @@ export default function WorkspaceLayout({ mode, children }: { mode: keyof typeof
                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-tertiary-container opacity-75"></span>
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-tertiary-container"></span>
               </span>
-              <span className="text-[11px] font-semibold tracking-wide">AI Neural Engine Online (3.9ms GPU)</span>
+              <span className="text-[11px] font-semibold tracking-wide">Research Engine Synchronized (EEG / EMG / 3D Kinematics)</span>
             </div>
           </div>
 
@@ -98,7 +98,7 @@ export default function WorkspaceLayout({ mode, children }: { mode: keyof typeof
                   <span>{label}</span>
                   {isLive && (
                     <span className="hidden md:inline-flex items-center px-2 py-0.5 rounded-full text-[10px] leading-tight font-bold bg-secondary-fixed text-on-secondary-fixed">
-                      Active
+                      Live
                     </span>
                   )}
                 </NavLink>
@@ -143,8 +143,8 @@ export default function WorkspaceLayout({ mode, children }: { mode: keyof typeof
             {/* Patient Profile Pill */}
             <div className="flex items-center gap-2 pl-2 py-1 pr-1 rounded-full bg-surface-container-low border border-outline-variant/30">
               <div className="text-right hidden sm:block pl-1">
-                <div className="text-xs font-bold text-on-surface leading-tight">Patient Studio</div>
-                <div className="text-[10px] text-on-surface-variant font-medium">Speech Biofeedback</div>
+                <div className="text-xs font-bold text-on-surface leading-tight">Research Station</div>
+                <div className="text-[10px] text-on-surface-variant font-medium">Multimodal Biofeedback</div>
               </div>
               <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-primary to-secondary text-white flex items-center justify-center font-bold text-xs shadow-sm">
                 <Sparkles size={14} />
@@ -160,56 +160,23 @@ export default function WorkspaceLayout({ mode, children }: { mode: keyof typeof
       </main>
 
       {/* Stitch Serene Footer */}
-      <footer className="relative z-10 max-w-[1280px] mx-auto px-6 py-6 text-xs text-on-surface-variant flex flex-wrap items-center justify-between gap-4 border-t border-on-surface/[0.06] mt-12 bg-surface-container-lowest/60 backdrop-blur-md rounded-t-3xl">
+      <footer className="relative z-10 max-w-[1440px] mx-auto px-6 py-6 text-xs text-on-surface-variant flex flex-wrap items-center justify-between gap-4 border-t border-on-surface/[0.06] mt-12 bg-surface-container-lowest/60 backdrop-blur-md rounded-t-3xl">
         <div className="flex items-center gap-2 text-on-surface-variant font-medium">
           <AudioLines size={16} className="text-primary" aria-hidden="true" />
-          <span>NeuroSpeech Rehab Studio · Multimodal Real-Time Articulatory Biofeedback</span>
+          <span>NeuroSpeech Rehab Studio · AI-Based Multimodal Speech Rehabilitation Using EEG, Facial EMG, and Real-Time Facial Tracking</span>
         </div>
         <div className="flex items-center gap-4 text-[11px] text-on-surface-variant font-semibold">
           <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-tertiary-fixed/50 text-on-tertiary-fixed">
             <span className="h-1.5 w-1.5 rounded-full bg-tertiary-container animate-pulse"></span>
-            RTX 3050 GPU (3.96ms)
+            PC Web Workstation (Synchronized)
           </span>
           <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-primary-fixed/50 text-on-primary-fixed">
             <ShieldCheck size={12} className="text-primary" />
-            95.42% Clinical Accuracy
+            Clinical Multimodal Engine
           </span>
-          <span className="text-outline">Zero-Login Instant Access</span>
+          <span className="text-outline">High-Resolution Desktop Mode</span>
         </div>
       </footer>
-
-      {/* Mobile Bottom Navigation Bar (Patient Mode) */}
-      {mode === 'patient' && (
-        <nav aria-label="Mobile Navigation" className="fixed bottom-0 inset-x-0 z-50 bg-white/95 backdrop-blur-lg border-t border-slate-200/80 px-4 py-2 flex items-center justify-around md:hidden shadow-lg">
-          {navigation.patient.map(([path, label, Icon]) => {
-            const to = `/patient${path}`;
-            const isLive = path === '/session';
-            return (
-              <NavLink
-                end
-                key={path}
-                to={to}
-                className={({ isActive }) =>
-                  `flex flex-col items-center gap-1 py-1 px-3 rounded-2xl transition-all btn-3d ${
-                    isActive
-                      ? 'text-primary font-bold scale-105'
-                      : 'text-on-surface-variant hover:text-on-surface'
-                  }`
-                }
-              >
-                {({ isActive }) => (
-                  <>
-                    <div className={`p-1.5 rounded-xl ${isActive ? 'bg-primary-fixed text-primary shadow-sm' : ''}`}>
-                      <Icon size={20} className={`icon-3d ${isLive && isActive ? 'animate-pulse text-secondary' : ''}`} />
-                    </div>
-                    <span className="text-[10px] tracking-tight">{label}</span>
-                  </>
-                )}
-              </NavLink>
-            );
-          })}
-        </nav>
-      )}
     </div>
   );
 }
