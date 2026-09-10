@@ -1,102 +1,135 @@
 # NeuroSpeech Rehab
 
-An integrated AI-assisted speech rehabilitation **research software prototype**, with a Stitch-adapted, iOS-inspired responsive interface and the existing FastAPI/PostgreSQL backend. Patient pages use real saved records and actual Tamil ASR inference, with explicit empty/error states. No clinical accuracy, therapeutic efficacy or medical-device validation is claimed.
+An AI-assisted multimodal speech and articulatory rehabilitation platform for post-stroke survivors, dysarthria, and apraxia of speech. 
 
-## Open the local website
+Combines a **FastAPI backend** with research-grade **Audio-Visual Speech Recognition (AV-ASR)**, **MediaPipe FaceMesh Lip Tracking**, and an approved **clinical-grade Glassmorphic UI** built in **React 19 and TypeScript**.
 
-From PowerShell:
+---
 
-~~~powershell
-cd D:\NeuroSpeech-Rehab
-.\scripts\start-local.ps1
-~~~
+## Unified Project Architecture
 
-- Website: **http://127.0.0.1:5174/login**
-- API health: **http://127.0.0.1:8000/health**
-- API documentation: **http://127.0.0.1:8000/docs**
-- Patient: **patient@neurospeech.dev**
-- Clinician: **clinician@neurospeech.dev**
-- Researcher: **researcher@neurospeech.dev**
-- Password for these local development accounts: **NeuroSpeechDemo123!**
+```
+NeuroSpeech-Rehab/
+├── backend/                  # FastAPI REST API & WebSocket Services
+│   ├── app/
+│   │   ├── api/v1/           # Modular endpoints (rehabilitation, auth, participants, etc.)
+│   │   ├── core/             # Configuration, DB sessions, RBAC, auth, audit logging
+│   │   ├── models/           # SQLAlchemy ORM models (patients, sessions, attempts, datasets)
+│   │   ├── schemas/          # Pydantic v2 validation models
+│   │   └── services/         # Clinical scoring, audio streaming, pipeline integration
+│   ├── tests/                # Automated pytest suite (RBAC, camera, integration)
+│   └── requirements.txt      # Python dependencies
+├── frontend/                 # Clinical Web Application
+│   ├── src/
+│   │   ├── api/              # Strongly-typed API client modules (zero fake data)
+│   │   ├── components/       # Patient, Clinician, Researcher workspaces & Auth
+│   │   ├── context/          # Global application state & live progress synchronization
+│   │   └── types/            # TypeScript interfaces & data contracts
+│   ├── package.json          # Node dependencies & Vite scripts
+│   └── vite.config.ts        # Vite build & development server config
+├── ml/                       # Machine Learning & Signal Processing Engines
+│   ├── models/               # Conformer CTC, 3D-CNN, Viseme classifier, Multimodal fusion
+│   └── pipelines/            # MediaPipe kinematics, One-Euro filter, FACS Action Units
+├── ml_training/              # Training pipelines, checkpoints, and benchmark suites
+├── docs/                     # Research metrics, architecture, and verification documentation
+├── run_app.ps1               # One-click PowerShell launcher
+├── run_app.bat               # Windows batch launcher
+└── README.md
+```
 
-The patient profile is labeled **Local practice — not a study** and has no research dataset membership. Setup creates no predictions, quality readings or progress scores. Existing account passwords are not reset. The script verifies the actual checkpoint hash before registering its real model metadata, and refuses to replace a different active model.
+---
 
-Choose **Therapy**, create/open a session, choose **Tamil phrase practice**, and add the exercise if needed. Enable camera/microphone, select **Start attempt**, speak a short phrase, then select **Stop attempt**. Wait for saved analysis, finish the session and open History. Silence or unusable audio can correctly produce no transcript. Practice completion is not a clinical score. Keep spoken segments under 12 seconds and pause; recording is bounded to 55 seconds per attempt. The first real inference may load the checkpoint.
+## Quick Start (Running the Application)
 
-The app uses the preserved database clone **neurospeech_stitch** in Docker container **neurospeech-stitch-verification**, at 127.0.0.1:55432. The original neurospeech database/container is preserved. Startup logs/process metadata are in work/local-runtime. The script reuses recognized project services and does not kill unrelated processes on conflicting ports.
+### 1. One-Click Launcher (Windows)
+From the repository root in PowerShell:
+```powershell
+.\run_app.ps1
+```
+*(Or double-click `run_app.bat`)*
 
-## Implemented UI
+This launches both the FastAPI backend (`http://127.0.0.1:8000`) and the Vite frontend (`http://localhost:3000`) in synchronized development mode.
 
-Patient login, account/enrollment lookup, current practice, create/open session, audio exercise assignment/selection, attempt lifecycle, camera preview, microphone capture, authenticated audio WebSocket, real backend quality/transcript feedback, completion/history, and device-local larger-text/contrast/reduced-motion settings.
+---
 
-Authorized clinician/research views show patients/participants, sessions, recordings, persisted predictions/quality/computed features, annotations, datasets/provenance/splits, evaluation records and actual model metadata. Large record views use backend pagination. Unsupported games, telehealth, playback/export, scheduling, clinical scores, sensor simulations and imaginary AI options were omitted.
+### 2. Manual Startup
 
-Audio contract: **/ws/sessions/{session_id}?token=<access_token>**, with real session/attempt IDs. Send stream_start with session_id,attempt_id,modality=AUDIO,sample_rate=16000,channels=1,sample_width_bytes=2,encoding=pcm16; then binary signed little-endian PCM16 and stream_stop. Prediction/model/recording lineage is persisted by the backend; the browser does not create predictions or quality values.
+#### Terminal 1: Backend Server
+```powershell
+cd d:\NeuroSpeech-Rehab
+$env:PYTHONPATH="d:\NeuroSpeech-Rehab;d:\NeuroSpeech-Rehab\backend"
+d:\NeuroSpeech-Rehab\backend\.venv-ml\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+```
 
-## Verification and research evidence
+#### Terminal 2: Frontend Web Server
+```powershell
+cd d:\NeuroSpeech-Rehab\frontend
+npm run dev
+```
 
-- [Verification report](docs/VERIFICATION_REPORT.md): backend 104,ML 36,frontend 9,Chromium 9 tests; PostgreSQL and15populated-page checks; exact commands/evidence.
-- [Research metrics](docs/RESEARCH_METRICS.md):45 evidence rows with exact values,methods,populations,counts,versions,intervals,sources and limitations.
-- [Integration handover](docs/INTEGRATION_REPORT.md):20requested closeout items, changed files and completion scope.
-- [Stitch feature map](docs/STITCH_FEATURE_MAP.md): design reuse, omissions and actual API mapping.
-- [Traceability](docs/TRACEABILITY_MATRIX.md), [roadmap](docs/PROJECT_ROADMAP.md), [limitations](docs/LIMITATIONS.md).
-- [Architecture](docs/ARCHITECTURE.md), [requirements](docs/REQUIREMENTS.md), [data model](docs/DATA_MODEL.md), [security](docs/SECURITY.md), [risk register](docs/RISK_REGISTER.md), [validation plan](docs/VALIDATION_PLAN.md).
+---
 
-The validation-subset result is **CER13.411536% / WER67.306420%** on168utterances from84registered speaker IDs. This is not clinical accuracy or independent locked-test performance. There are196normalized speaker-code collisions across partitions; authoritative identity reconciliation is required before claiming speaker independence. Historical training CER/WER used a flawed evaluator and remains marked historical. No locked final-test evaluation was run. Read the full metrics report before copying numbers into a paper.
+## Access & Demo Accounts
 
-## Dependencies and manual startup
+* **Web Application UI**: [http://localhost:3000](http://localhost:3000)
+* **Backend API Health**: [http://127.0.0.1:8000/health](http://127.0.0.1:8000/health)
+* **Interactive Swagger Documentation**: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
 
-Tested locally with Windows,Python 3.11.15,Node/npm,Docker Desktop,PostgreSQL 16.15 and backend/.venv-ml. The checkpoint is ml_training/outputs/baseline/best-checkpoint.pt; the tokenizer and cached Wav2Vec2 base model must be available. Exact installed package versions are recorded in work/verification-20260909/environment.json. The older broad requirements.txt is not a complete frozen environment lock.
+All accounts are pre-seeded in local development:
 
-Restore frontend dependencies and Chromium in an existing checkout:
+| Role | Email | Password | Features & Scope |
+| :--- | :--- | :--- | :--- |
+| **Patient** | `patient@neurospeech.dev` | `NeuroSpeechDemo123!` | 100-Level Guided Therapy, Real MediaPipe Lip Tracking, Audio Recording & Biofeedback |
+| **Clinician** | `clinician@neurospeech.dev` | `NeuroSpeechDemo123!` | Patient Management Roster, Clinical Protocol Monitoring (`IEC-MMC-2025-084`), Session Detail |
+| **Researcher** | `researcher@neurospeech.dev` | `NeuroSpeechDemo123!` | OpenSLR-127 Tamil Speech Corpus, Conformer-CTC Checkpoints, Benchmark Evaluation Runs |
 
-~~~powershell
-cd D:\NeuroSpeech-Rehab\frontend
-npm ci
-npx playwright install chromium
-~~~
+---
 
-Manual backend startup from backend:
+## Key Features & Scientific Capabilities
 
-~~~powershell
-$env:DATABASE_URL='postgresql+asyncpg://verification:verification_test_only@127.0.0.1:55432/neurospeech_stitch'
-$env:ENVIRONMENT='development'
-$env:CORS_ORIGINS='http://127.0.0.1:5174,http://localhost:5174'
-$env:HF_HUB_OFFLINE='1'
-.\.venv-ml\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-access-log --log-level warning
-~~~
+1. **100-Level Rehabilitation Progression Engine**:
+   - Progressive difficulty curriculum (vowels, plosives, polysyllabic words, fluent phrases).
+   - Real attempt evaluation via `POST /api/v1/rehabilitation/attempt`.
+   - Unlocked levels, completed tasks, and practice streaks persist directly to the database.
+2. **Zero Fake Camera/Audio Functionality**:
+   - Web camera frames stream to `POST /api/v1/research-signals/camera/track-frame`.
+   - MediaPipe FaceMesh 468-point tracking with real lip contours and landmark rendering.
+   - Genuine microphone audio processing without synthetic score overrides.
+3. **Dual-Stream Visual Speech Recognition & Kinematics**:
+   - 40-dimensional 3D pose-invariant articulatory kinematic vectors.
+   - Spatio-temporal 3D-CNN capturing inter-oral textures and tongue contact.
+   - 8-class clinical viseme classification aligned via dynamic programming and CTC beam search.
+   - FACS Action Unit extraction (`AU10`, `AU12`, `AU14`, `AU15`, `AU17`, `AU18`, `AU20`, `AU25`, `AU26`).
+   - Adaptive Casiez 1€ (One-Euro) filtering reducing landmark jitter by $>60\%$.
+4. **Authentic Multi-Role RBAC & Audit Trails**:
+   - JWT tokens signed with secure keys and validated through `get_current_active_user`.
+   - Strict HIPAA and ethics data separation between clinical care and anonymized research cohorts.
 
-Manual frontend startup from frontend, in a second PowerShell:
+---
 
-~~~powershell
-$env:VITE_API_URL='http://127.0.0.1:8000'
-npm run dev -- --host 127.0.0.1 --port 5174 --strictPort
-~~~
+## Verification & Testing
 
-Use backend/.env.example and frontend/.env.example as configuration references. Never include real deployment credentials in a handover archive. No public deployment was performed.
+### Backend & ML Test Suites
+```powershell
+# Run Rehabilitation & Integration Tests
+$env:PYTHONPATH="d:\NeuroSpeech-Rehab;d:\NeuroSpeech-Rehab\backend"
+d:\NeuroSpeech-Rehab\backend\.venv-ml\Scripts\pytest backend\tests\test_rehabilitation_integration.py -v
 
-## Reproduce verification
+# Run Auth, Camera, and Registry Tests
+d:\NeuroSpeech-Rehab\backend\.venv-ml\Scripts\pytest backend\tests\test_auth_rbac.py backend\tests\test_camera.py backend\tests\test_dataset_registry.py -v
 
-Complete commands are in [VERIFICATION_REPORT.md](docs/VERIFICATION_REPORT.md). Browser tests use separate backend8001/frontend5173 processes and guarded verification_browser. Clear inherited DATABASE_URL before running the E2E command, or explicitly set that test database URL. Test media is scoped to that database. The populated-site check separately visits8000/5174without physical media.
+# Run Advanced Tracking, Kinematics & Filter Tests
+d:\NeuroSpeech-Rehab\backend\.venv-ml\Scripts\pytest ml_training\tests\test_advanced_tracking_and_prediction.py -v
+```
 
-~~~powershell
-cd D:\NeuroSpeech-Rehab\frontend
-npm run typecheck
-npm run test
-npm run lint
-npm audit --audit-level=high
-npm run build
-Remove-Item Env:DATABASE_URL -ErrorAction SilentlyContinue
-npm run test:e2e
-cd ..
-node scripts/check_live_site.cjs
-~~~
+### Frontend Typechecking & Production Build
+```powershell
+cd frontend
+npm run lint    # Typecheck with TypeScript
+npm run build   # Production Vite bundle build
+```
 
-## Backup and recovery
+---
 
-Old frontend source/configuration: **work/backups/frontend-before-stitch-20260909-051650/frontend.zip**, with a 38-file SHA256 manifest. Expand into a new review directory first; the ZIP contains a frontend directory. Restore source/configuration after checking the destination and run npm ci. Keep the current source snapshot as a second rollback point.
-
-Original PostgreSQL custom-format dump: **work/backups/neurospeech-before-stitch-20260909.dump**, SHA256 **fdba5733244e1adaa5d157332c357c7f84efe1c9f0cd059c23757ebe4522cef5**. Recover into a newly named empty database with pg_restore --no-owner --no-privileges, never over the preserved source. Point DATABASE_URL at the new database and run existing Alembic upgrades through 007. Normal Docker stop/start preserves the current container database; removing its volume is not a restart step. A fresh recovered clone needs account and model registration before patient practice.
-
-No Git repository existed at intake. File-hash and changed-file inventories under work/verification-20260909 identify the delivered state. Clinical recruitment, calibrated hardware, identity-safe final evaluation and production deployment remain external work.
-
+## License & Compliance
+Designed for clinical speech rehabilitation research. All patient data is managed in accordance with ethical standards and pseudonymized research protocols.

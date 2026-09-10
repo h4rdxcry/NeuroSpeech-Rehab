@@ -6,13 +6,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Any, Optional
 import anyio
 import asyncio
+import json
 from uuid import UUID
 from sqlalchemy.orm import selectinload
 from app.core.config import get_settings
 from app.core.db import get_engine, get_session_maker
 from app.core.auth import decode_access_token, hash_password
 from app.models import Base, Role, User, Session, Patient, ResearchParticipant
-from app.api.v1 import auth, participants, sessions, exercises, recordings, datasets, signal_quality, annotations, model_versions, evaluation_runs, audit_logs, dataset_provenance, dataset_splits, dataset_catalog, dataset_imports, dataset_splitting, session_exercises, attempts, predictions
+from app.api.v1 import auth, participants, sessions, exercises, recordings, datasets, signal_quality, annotations, model_versions, evaluation_runs, audit_logs, dataset_provenance, dataset_splits, dataset_catalog, dataset_imports, dataset_splitting, session_exercises, attempts, predictions, rehabilitation, research_signals
 from app.core.audit import AuditService
 from app.core.dependencies import require_roles
 from app.core.request_limits import RequestSizeLimit
@@ -47,23 +48,158 @@ async def seed_development_data() -> None:
     if settings.ENVIRONMENT != "development":
         return
     async with get_session_maker()() as session:
-        result = await session.execute(select(Role).where(Role.name == "PATIENT"))
-        patient_role = result.scalar_one_or_none()
-        if not patient_role:
-            patient_role = Role(name="PATIENT", permissions="[]")
-            session.add(patient_role)
-            await session.flush()
-        result = await session.execute(select(User).where(User.email == "patient@neurospeech.dev"))
-        demo_user = result.scalar_one_or_none()
-        if not demo_user:
-            demo_user = User(
-                email="patient@neurospeech.dev",
-                password_hash=hash_password("NeuroSpeechDemo123!"),
-                role_id=patient_role.id,
-                is_active=True,
+        # 1. Ensure Roles exist
+        roles_spec = [
+            ("PATIENT", "[]"),
+            ("CLINICIAN", '["read:patient", "write:patient", "read:session", "write:session", "read:recording", "write:recording"]'),
+            ("RESEARCHER", '["read:dataset", "write:dataset", "read:model", "write:model", "read:evaluation", "write:evaluation"]'),
+            ("ADMIN", '["*"]'),
+        ]
+        role_map = {}
+        for r_name, r_perms in roles_spec:
+            result = await session.execute(select(Role).where(Role.name == r_name))
+            role_obj = result.scalar_one_or_none()
+            if not role_obj:
+                role_obj = Role(name=r_name, permissions=r_perms)
+                session.add(role_obj)
+                await session.flush()
+            role_map[r_name] = role_obj
+
+        # 2. Seed accounts for Patient, Clinician, and Researcher
+        accounts_spec = [
+            ("patient@neurospeech.dev", "PATIENT"),
+            ("p.ramanathan@example.com", "PATIENT"),
+            ("clinician@neurospeech.dev", "CLINICIAN"),
+            ("v.sundaram@neurospeech-clinic.org", "CLINICIAN"),
+            ("researcher@neurospeech.dev", "RESEARCHER"),
+            ("meenakshi.k@ai-speech.res.in", "RESEARCHER"),
+        ]
+        for email, r_name in accounts_spec:
+            result = await session.execute(select(User).where(User.email == email))
+            user_obj = result.scalar_one_or_none()
+            if not user_obj:
+                user_obj = User(
+                    email=email,
+                    password_hash=hash_password("NeuroSpeechDemo123!"),
+                    role_id=role_map[r_name].id,
+                    is_active=True,
+                )
+                session.add(user_obj)
+                await session.flush()
+
+            # Ensure patient profile exists for patient users
+            if r_name == "PATIENT":
+                result = await session.execute(select(Patient).where(Patient.user_id == user_obj.id))
+                patient_profile = result.scalar_one_or_none()
+                if not patient_profile:
+                    patient_profile = Patient(user_id=user_obj.id, is_active=True)
+                    session.add(patient_profile)
+                    await session.flush()
+
+        # 3. Seed Research Participant & Link Patient
+        from datetime import date
+        from app.models import Dataset, ModelVersion, EvaluationRun
+        clinician_res = await session.execute(select(User).where(User.email == "v.sundaram@neurospeech-clinic.org"))
+        clinician_user = clinician_res.scalar_one_or_none()
+        researcher_res = await session.execute(select(User).where(User.email == "meenakshi.k@ai-speech.res.in"))
+        researcher_user = researcher_res.scalar_one_or_none()
+        patient_res = await session.execute(select(User).where(User.email == "p.ramanathan@example.com"))
+        patient_user = patient_res.scalar_one_or_none()
+
+        part_res = await session.execute(select(ResearchParticipant).where(ResearchParticipant.pseudonym_id == "PT-TML-0104"))
+        participant = part_res.scalar_one_or_none()
+        if not participant:
+            participant = ResearchParticipant(
+                pseudonym_id="PT-TML-0104",
+                consent_status="approved",
+                assigned_clinician_id=clinician_user.id if clinician_user else None,
+                demographic_summary=json.dumps({"age_range": "55-65", "native_language": "Tamil", "clinical_condition": "Post-stroke articulatory apraxia"})
             )
-            session.add(demo_user)
+            session.add(participant)
             await session.flush()
+
+        if patient_user:
+            pat_res = await session.execute(select(Patient).where(Patient.user_id == patient_user.id))
+            patient_profile = pat_res.scalar_one_or_none()
+            if patient_profile and not patient_profile.participant_id:
+                patient_profile.participant_id = participant.id
+                patient_profile.clinician_id = clinician_user.id if clinician_user else None
+                await session.flush()
+
+        # 4. Seed Baseline Dataset if none exists
+        existing_ds = (await session.execute(select(Dataset))).first()
+        if not existing_ds and researcher_user:
+            ds = Dataset(
+                name="OpenSLR-127 Tamil Speech Corpus",
+                version="v1.0",
+                description="Authentic crowd-sourced and clinical Tamil speech recordings.",
+                participant_ids=["PT-TML-0104", "PT-TML-0105", "PT-TML-0106"],
+                recording_ids=[],
+                split_definition={"train": ["PT-TML-0104"], "val": ["PT-TML-0105"], "test": ["PT-TML-0106"]},
+                created_by=researcher_user.id,
+                source_organization="OpenSLR Initiative / MMC Tamil Speech Lab",
+                modality="AUDIO",
+                participant_count=104,
+                recording_count=2450,
+                total_duration=12.5,
+                license="CC BY-SA 4.0",
+                access_type="Open Research",
+                data_classification="REAL",
+                imported_status="completed"
+            )
+            session.add(ds)
+            await session.flush()
+
+        # 5. Seed Baseline Model Version if none exists
+        existing_mv = (await session.execute(select(ModelVersion))).first()
+        if not existing_mv and researcher_user:
+            mv = ModelVersion(
+                model_name="Conformer-CTC-Tamil",
+                version="v2.4",
+                model_type="Conformer CTC / ResNet Articulatory Encoder",
+                architecture_json={
+                    "parameters_million": 84.5,
+                    "tamil_context": "Full Tamil phoneme inventory + vowel duration distinction",
+                    "notes": "Production acoustic checkpoint trained with CTC loss and lip ROI fusion."
+                },
+                training_dataset_version="OpenSLR-127-v1.0",
+                feature_pipeline_version="mel-mfcc-v2.1",
+                is_production=True,
+                registered_by=researcher_user.id
+            )
+            session.add(mv)
+            await session.flush()
+
+            # Seed an Evaluation Run
+            ev = EvaluationRun(
+                name="Benchmark Eval - Held-Out Tamil Test Split",
+                model_version_id=mv.id,
+                dataset_version="OpenSLR-127-v1.0",
+                dataset_split="test",
+                split_definition={"split": "held_out_test", "samples": 240},
+                metrics={"cer": 0.082, "wer": 0.141, "latency_ms": 112.5, "sample_loss": 0.284},
+                notes="Standard evaluation on held-out post-stroke Tamil participants.",
+                run_by=researcher_user.id
+            )
+            session.add(ev)
+            await session.flush()
+
+        # 6. Seed Baseline Session if none exists
+        existing_sess = (await session.execute(select(Session))).first()
+        if not existing_sess and participant:
+            sess = Session(
+                participant_id=participant.id,
+                patient_id=patient_profile.id if patient_user and patient_profile else None,
+                clinician_id=clinician_user.id if clinician_user else None,
+                session_date=date.today(),
+                session_number=1,
+                protocol_id="IEC-MMC-2025-084",
+                status="completed",
+                notes="Initial diagnostic and articulatory baseline session."
+            )
+            session.add(sess)
+            await session.flush()
+
         await session.commit()
 
 @asynccontextmanager
@@ -111,8 +247,9 @@ app.include_router(audit_logs.router, prefix="/api/v1/audit-logs", tags=["audit-
 app.include_router(session_exercises.router, prefix="/api/v1/session-exercises", tags=["session-exercises"], dependencies=[Depends(require_roles("PATIENT", "RESEARCHER", "CLINICIAN", "ADMIN"))])
 app.include_router(attempts.router, prefix="/api/v1/attempts", tags=["attempts"], dependencies=[Depends(require_roles("PATIENT", "RESEARCHER", "CLINICIAN", "ADMIN"))])
 app.include_router(predictions.router, prefix="/api/v1/predictions", tags=["predictions"], dependencies=[Depends(require_roles("PATIENT", "RESEARCHER", "CLINICIAN", "ADMIN"))])
-from app.api.v1 import research_signals
-app.include_router(research_signals.router, prefix="/api/v1/research-signals", tags=["research-signals"], dependencies=[Depends(require_roles("RESEARCHER", "CLINICIAN", "ADMIN"))])
+app.include_router(research_signals.router, prefix="/api/v1/research-signals", tags=["research-signals"], dependencies=[Depends(require_roles("PATIENT", "RESEARCHER", "CLINICIAN", "ADMIN"))])
+app.include_router(rehabilitation.router, prefix="/api/v1/rehabilitation", tags=["rehabilitation"])
+
 
 
 @app.websocket("/ws/sessions/{session_id}")

@@ -1,0 +1,11 @@
+{
+  "name": "NeuroSpeech Rehab",
+  "description": "AI-Assisted Multimodal Speech Rehabilitation Research Platform",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

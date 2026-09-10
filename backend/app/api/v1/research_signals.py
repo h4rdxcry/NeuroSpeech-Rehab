@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.db import get_db
-from app.core.dependencies import require_roles
+from app.core.dependencies import require_roles, get_current_active_user
 from app.core.audit import AuditService
 from app.models import Recording, SignalQuality, Attempt, SessionExercise, Session
 from app.models.feature import FeatureRecord
@@ -29,7 +29,7 @@ class CameraFrame(BaseModel):
 
 
 @router.post("/camera/track-frame")
-async def camera_frame(payload: CameraFrame, user=Depends(staff)):
+async def camera_frame(payload: CameraFrame, user=Depends(get_current_active_user)):
     from app.services.camera import track_frame, TrackerUnavailable
     try:
         return await asyncio.to_thread(track_frame, payload.image_base64)

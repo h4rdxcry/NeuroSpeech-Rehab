@@ -1,0 +1,214 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* 2026 Clinical Glassmorphism Design System Tokens */
+:root {
+  --bg-canvas: #F4F8FC;
+  --bg-canvas-subtle: #F7F9FB;
+  --surface-glass: rgba(255, 255, 255, 0.84);
+  --surface-glass-border: rgba(226, 232, 240, 0.75);
+  --surface-solid: #FFFFFF;
+  --surface-subtle: #F8FAFC;
+  
+  --brand-primary: #2563EB;
+  --brand-deep: #174EA6;
+  --brand-surface: #EAF2FF;
+  
+  --therapeutic-teal: #0F9F94;
+  --therapeutic-soft: #E7F8F5;
+  
+  --text-primary: #10213A;
+  --text-secondary: #526175;
+  --text-muted: #728095;
+  
+  --status-success-bg: #E6F4EA;
+  --status-success-text: #137333;
+  --status-warning-bg: #FEF7E0;
+  --status-warning-text: #B06000;
+  --status-danger-bg: #FCE8E6;
+  --status-danger-text: #C5221F;
+  --status-info-bg: #E8F0FE;
+  --status-info-text: #1A73E8;
+
+  --shadow-glass: 0 4px 20px -2px rgba(16, 33, 58, 0.05), 0 2px 6px -1px rgba(16, 33, 58, 0.03);
+  --shadow-card: 0 1px 3px 0 rgba(16, 33, 58, 0.04), 0 1px 2px -1px rgba(16, 33, 58, 0.03);
+}
+
+.dark {
+  color-scheme: dark;
+  --bg-canvas: #0B132B;
+  --bg-canvas-subtle: #111C3D;
+  --surface-glass: rgba(17, 28, 61, 0.88);
+  --surface-glass-border: rgba(51, 65, 85, 0.7);
+  --surface-solid: #132042;
+  --surface-subtle: #1C2C55;
+
+  --brand-primary: #3B82F6;
+  --brand-deep: #60A5FA;
+  --brand-surface: #1E293B;
+
+  --therapeutic-teal: #14B8A6;
+  --therapeutic-soft: #042F2E;
+
+  --text-primary: #F1F5F9;
+  --text-secondary: #94A3B8;
+  --text-muted: #64748B;
+
+  --status-success-bg: #064E3B;
+  --status-success-text: #6EE7B7;
+  --status-warning-bg: #78350F;
+  --status-warning-text: #FDE68A;
+  --status-danger-bg: #7F1D1D;
+  --status-danger-text: #FCA5A5;
+  --status-info-bg: #1E3A8A;
+  --status-info-text: #93C5FD;
+
+  --shadow-glass: 0 4px 20px -2px rgba(0, 0, 0, 0.4), 0 2px 6px -1px rgba(0, 0, 0, 0.25);
+  --shadow-card: 0 1px 3px 0 rgba(0, 0, 0, 0.5);
+}
+
+body {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  background-color: var(--bg-canvas);
+  color: var(--text-primary);
+  min-height: 100vh;
+}
+
+/* Tamil font class */
+.font-tamil {
+  font-family: 'Noto Sans Tamil', 'Inter', system-ui, sans-serif;
+  line-height: 1.4;
+}
+
+/* Glassmorphic card styling */
+.glass-panel {
+  background: var(--surface-glass);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid var(--surface-glass-border);
+  box-shadow: var(--shadow-glass);
+}
+
+/* Accessibility: Higher Contrast Mode (WCAG AAA Compliance) */
+body.high-contrast,
+html.high-contrast {
+  --bg-canvas: #FFFFFF;
+  --bg-canvas-subtle: #F8FAFC;
+  --surface-glass: #FFFFFF;
+  --surface-glass-border: #0F172A;
+  --surface-solid: #FFFFFF;
+  --surface-subtle: #F1F5F9;
+  --text-primary: #000000;
+  --text-secondary: #0F172A;
+  --text-muted: #1E293B;
+  --brand-primary: #1D4ED8;
+  --brand-deep: #1E40AF;
+  --therapeutic-teal: #047857;
+}
+
+body.high-contrast .glass-panel,
+html.high-contrast .glass-panel {
+  background: #FFFFFF !important;
+  border: 2px solid #0F172A !important;
+  box-shadow: none !important;
+}
+
+body.high-contrast button,
+html.high-contrast button {
+  border-width: 2px !important;
+}
+
+body.high-contrast input,
+body.high-contrast select,
+body.high-contrast textarea {
+  border-width: 2px !important;
+  border-color: #0F172A !important;
+}
+
+/* High Contrast in Dark Theme */
+body.high-contrast.dark,
+html.dark body.high-contrast,
+body.high-contrast[class*="dark"],
+html.high-contrast.dark {
+  --bg-canvas: #000000;
+  --bg-canvas-subtle: #060B14;
+  --surface-glass: #090E1A;
+  --surface-glass-border: #FFFFFF;
+  --surface-solid: #090E1A;
+  --surface-subtle: #131D33;
+  --text-primary: #FFFFFF;
+  --text-secondary: #F8FAFC;
+  --text-muted: #E2E8F0;
+  --brand-primary: #60A5FA;
+  --brand-deep: #93C5FD;
+  --therapeutic-teal: #34D399;
+}
+
+body.high-contrast.dark .glass-panel,
+html.dark body.high-contrast .glass-panel {
+  background: #060A14 !important;
+  border: 2px solid #FFFFFF !important;
+  box-shadow: none !important;
+}
+
+body.high-contrast.dark button,
+html.dark body.high-contrast button {
+  border-color: #FFFFFF !important;
+}
+
+body.high-contrast.dark input,
+body.high-contrast.dark select,
+body.high-contrast.dark textarea {
+  border-color: #FFFFFF !important;
+}
+
+/* High Contrast Muted Text Enhancement */
+body.high-contrast .text-slate-500,
+body.high-contrast .text-slate-400,
+body.high-contrast .text-\[\#526175\],
+body.high-contrast .text-\[\#728095\] {
+  color: #0F172A !important;
+  font-weight: 500;
+}
+
+body.high-contrast.dark .text-slate-500,
+body.high-contrast.dark .text-slate-400,
+body.high-contrast.dark .text-\[\#526175\],
+body.high-contrast.dark .text-\[\#728095\] {
+  color: #F8FAFC !important;
+  font-weight: 500;
+}
+
+/* Accessibility: Larger Text Mode */
+body.larger-text {
+  font-size: 112.5%;
+}
+body.larger-text h1 {
+  font-size: 2.25rem !important;
+}
+body.larger-text h2 {
+  font-size: 1.75rem !important;
+}
+body.larger-text p, 
+body.larger-text span, 
+body.larger-text button {
+  font-size: 1.075rem !important;
+}
+
+/* Accessibility: Reduced Motion Mode */
+body.reduced-motion *,
+body.reduced-motion *::before,
+body.reduced-motion *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+}
+
+/* Calm Mode */
+body.calm-mode {
+  background-image: none !important;
+}
+body.calm-mode .pulse-indicator {
+  animation: none !important;
+}
