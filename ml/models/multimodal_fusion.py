@@ -1,6 +1,6 @@
 """Multi-Stream Cross-Attention Multimodal Fusion Network.
-Fuses Speech Audio, 3D Facial Kinematics, Facial sEMG, and EEG
-for Clinical Speech Rehabilitation and Biofeedback.
+Fuses Speech Audio, 3D Facial Kinematics, Viseme Sequences, Facial sEMG, and EEG
+for Clinical Speech Rehabilitation, Visual Speech Recognition, and Multimodal Biofeedback.
 """
 from typing import Dict, List, Optional, Tuple, Any
 import torch
@@ -13,12 +13,13 @@ from ml.models.biosignal_encoders import (
     FacialEMGEncoder,
     EEGMotorEncoder,
 )
+from ml.models.viseme_classifier import TemporalVisemeClassifier
 
 
 class MultimodalFusionModel(nn.Module):
     """Multi-Stream Cross-Attention Fusion Architecture for Speech Rehabilitation.
 
-    Supports dynamic modality availability and research ablation studies.
+    Supports dynamic modality availability, temporal viseme sequences, and research ablation studies.
     """
     MODALITIES = ["AUDIO", "VISION", "EMG", "EEG"]
 
@@ -38,6 +39,8 @@ class MultimodalFusionModel(nn.Module):
         # Modality Encoders
         self.audio_encoder = AcousticEmbeddingEncoder(in_features=audio_in_dim, latent_dim=d_model, dropout=dropout)
         self.vision_encoder = FacialKinematicsEncoder(in_features=vision_in_dim, latent_dim=d_model, dropout=dropout)
+        self.vision_40_proj = nn.Linear(40, vision_in_dim)  # Adapter for 40-dim single frame kinematics
+        self.temporal_viseme_encoder = TemporalVisemeClassifier(in_dim=40, num_classes=8, hidden_dim=64, d_model=d_model)
         self.emg_encoder = FacialEMGEncoder(in_features=emg_in_dim, latent_dim=d_model, dropout=dropout)
         self.eeg_encoder = EEGMotorEncoder(in_features=eeg_in_dim, latent_dim=d_model, dropout=dropout)
 
@@ -54,6 +57,15 @@ class MultimodalFusionModel(nn.Module):
             nn.Linear(d_model * 2, d_model),
         )
         self.norm2 = nn.LayerNorm(d_model)
+
+        # Audio-Visual Cross-Modal Interaction Head
+        self.av_cross_attention = nn.MultiheadAttention(embed_dim=d_model, num_heads=num_heads, dropout=dropout, batch_first=True)
+        self.av_joint_head = nn.Sequential(
+            nn.Linear(d_model * 2, 64),
+            nn.GELU(),
+            nn.Linear(64, 1),
+            nn.Sigmoid(),
+        )
 
         # Classification & Biofeedback Heads
         # 1. Rehabilitation Mastery Score (0.0 to 1.0)
@@ -87,20 +99,29 @@ class MultimodalFusionModel(nn.Module):
             nn.Sigmoid(),
         )
 
+        # 5. Articulatory Motor Coordination Head
+        self.motor_score_head = nn.Sequential(
+            nn.Linear(d_model, 32),
+            nn.GELU(),
+            nn.Linear(32, 1),
+            nn.Sigmoid(),
+        )
+
     def forward(
         self,
         audio_feat: Optional[torch.Tensor] = None,
         vision_feat: Optional[torch.Tensor] = None,
         emg_feat: Optional[torch.Tensor] = None,
         eeg_feat: Optional[torch.Tensor] = None,
+        vision_seq: Optional[torch.Tensor] = None,
         active_modalities: Optional[List[str]] = None,
     ) -> Dict[str, torch.Tensor]:
-        """Forward pass with optional dynamic modality masking (ablation-ready)."""
+        """Forward pass with optional dynamic modality masking and temporal viseme integration."""
         device = next(self.parameters()).device
         batch_size = 1
 
         # Determine batch size from first non-None tensor
-        for feat in (audio_feat, vision_feat, emg_feat, eeg_feat):
+        for feat in (audio_feat, vision_feat, vision_seq, emg_feat, eeg_feat):
             if feat is not None:
                 batch_size = feat.shape[0]
                 break
@@ -109,19 +130,31 @@ class MultimodalFusionModel(nn.Module):
         mask: List[bool] = []  # True = valid, False = masked
 
         # Encode Audio
+        a_emb: Optional[torch.Tensor] = None
         if audio_feat is not None and (active_modalities is None or "AUDIO" in active_modalities):
-            a_emb = self.audio_encoder(audio_feat) + self.modality_embed[0]
-            tokens.append(a_emb.unsqueeze(1))
+            a_emb = self.audio_encoder(audio_feat)
+            tokens.append((a_emb + self.modality_embed[0]).unsqueeze(1))
             mask.append(False)  # Not ignored
         else:
             dummy = torch.zeros(batch_size, 1, self.d_model, device=device)
             tokens.append(dummy)
             mask.append(True)  # Ignored by attention
 
-        # Encode Vision
-        if vision_feat is not None and (active_modalities is None or "VISION" in active_modalities):
-            v_emb = self.vision_encoder(vision_feat) + self.modality_embed[1]
-            tokens.append(v_emb.unsqueeze(1))
+        # Encode Vision (Temporal sequence takes precedence if provided)
+        v_emb: Optional[torch.Tensor] = None
+        viseme_frame_logits: Optional[torch.Tensor] = None
+        if (vision_seq is not None or vision_feat is not None) and (active_modalities is None or "VISION" in active_modalities):
+            if vision_seq is not None:
+                # Sequence: (B, T, 40)
+                viseme_frame_logits, v_emb = self.temporal_viseme_encoder(vision_seq)
+            elif vision_feat is not None:
+                if vision_feat.shape[-1] == 40:
+                    v_16 = self.vision_40_proj(vision_feat)
+                    v_emb = self.vision_encoder(v_16)
+                else:
+                    v_emb = self.vision_encoder(vision_feat)
+
+            tokens.append((v_emb + self.modality_embed[1]).unsqueeze(1))
             mask.append(False)
         else:
             dummy = torch.zeros(batch_size, 1, self.d_model, device=device)
@@ -168,22 +201,42 @@ class MultimodalFusionModel(nn.Module):
         weights = (~key_padding_mask).float().unsqueeze(-1)  # (batch, 4, 1)
         pooled = (fused_seq * weights).sum(dim=1) / weights.sum(dim=1).clamp(min=1.0)
 
+        # Audio-Visual Cross Attention & Joint Confidence
+        if a_emb is not None and v_emb is not None:
+            a_token = a_emb.unsqueeze(1)  # (B, 1, d_model)
+            v_token = v_emb.unsqueeze(1)  # (B, 1, d_model)
+            av_attn, _ = self.av_cross_attention(a_token, v_token, v_token)
+            av_cat = torch.cat([a_token.squeeze(1), av_attn.squeeze(1)], dim=-1)
+            joint_av_conf = self.av_joint_head(av_cat).squeeze(-1)
+        elif a_emb is not None or v_emb is not None:
+            joint_av_conf = self.confidence_head(pooled).squeeze(-1)
+        else:
+            joint_av_conf = torch.zeros(batch_size, device=device)
+
         # Predict clinical scores
         rehab_score = self.rehab_score_head(pooled).squeeze(-1)  # (batch,)
         category_logits = self.category_head(pooled)             # (batch, 3)
         kinematic_target = self.kinematic_head(pooled).squeeze(-1)
         confidence = self.confidence_head(pooled).squeeze(-1)
+        motor_score = self.motor_score_head(pooled).squeeze(-1)
 
         # Compute modality contribution weights from attention
-        # Average attention received by each modality token
         modality_contributions = attn_weights.mean(dim=1) if attn_weights is not None else None
 
-        return {
+        result: Dict[str, Any] = {
             "rehab_score": rehab_score,
             "category_logits": category_logits,
             "predicted_category": torch.argmax(category_logits, dim=-1),
             "target_lip_aperture": kinematic_target,
             "confidence": confidence,
+            "joint_av_confidence": joint_av_conf,
+            "motor_score": motor_score,
             "modality_contributions": modality_contributions,
             "fused_embedding": pooled,
         }
+
+        if viseme_frame_logits is not None:
+            result["viseme_frame_logits"] = viseme_frame_logits
+            result["predicted_visemes"] = torch.argmax(viseme_frame_logits, dim=-1)
+
+        return result

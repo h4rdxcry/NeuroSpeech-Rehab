@@ -1,5 +1,5 @@
 """Clinical Rehabilitation Service: High-Accuracy Target Verification & Gamified Biofeedback.
-Combines acoustic speech, facial tracking kinematics, and biosignal metrics.
+Combines acoustic speech, facial tracking kinematics, viseme sequences, and biosignal metrics.
 """
 from typing import Dict, Any, Optional, List
 import os
@@ -26,6 +26,7 @@ class ClinicalRehabService:
         lip_aperture_ratio: Optional[float] = None,
         mouth_width_ratio: Optional[float] = None,
         target_vowel_type: str = "default",
+        landmarks_sequence: Optional[List[List[List[float]]]] = None,
         emg_features: Optional[List[float]] = None,
         eeg_features: Optional[List[float]] = None,
         audio_features: Optional[List[float]] = None,
@@ -55,7 +56,6 @@ class ClinicalRehabService:
         # 3. Biosignal Coordination
         emg_symmetry = None
         if emg_features and len(emg_features) >= 10:
-            # Estimate bilateral symmetry from left and right channels
             left_pwr = sum(emg_features[0:5])
             right_pwr = sum(emg_features[5:10])
             total_pwr = left_pwr + right_pwr
@@ -65,12 +65,11 @@ class ClinicalRehabService:
 
         eeg_engagement = None
         if eeg_features and len(eeg_features) >= 5:
-            # Estimate motor readiness from beta band power (index 3) vs alpha (index 2)
             alpha_pwr = max(eeg_features[2], 1e-6)
             beta_pwr = max(eeg_features[3], 1e-6)
             eeg_engagement = min(1.0, beta_pwr / (alpha_pwr + beta_pwr))
 
-        # 4. Multimodal Fusion AI Prediction
+        # 4. Multimodal Fusion AI Prediction (supporting temporal sequences & visemes)
         vision_feat_vec = None
         if lip_aperture_ratio is not None and mouth_width_ratio is not None:
             vision_feat_vec = [
@@ -86,9 +85,20 @@ class ClinicalRehabService:
             vision_features=vision_feat_vec,
             emg_features=emg_features,
             eeg_features=eeg_features,
+            landmarks_sequence=landmarks_sequence,
             target_phrase=target_phrase,
             recognized_transcript=recognized_transcript,
+            target_vowel_type=target_vowel_type,
         )
+
+        # Extract viseme and dynamic DTW scores if sequence was processed
+        viseme_score = None
+        if "viseme_analysis" in ai_pred and "viseme_match_score" in ai_pred["viseme_analysis"]:
+            viseme_score = ai_pred["viseme_analysis"]["viseme_match_score"]
+
+        dtw_score = None
+        if "kinematic_biomarkers" in ai_pred and "dtw_trajectory_similarity" in ai_pred["kinematic_biomarkers"]:
+            dtw_score = ai_pred["kinematic_biomarkers"]["dtw_trajectory_similarity"]
 
         # 5. Composite Rehabilitation Score
         composite_summary = ArticulationScorer.compute_composite_rehab_score(
@@ -96,6 +106,8 @@ class ClinicalRehabService:
             kinematic_score=kinematic_score,
             emg_symmetry=emg_symmetry,
             eeg_engagement=eeg_engagement,
+            viseme_match_score=viseme_score,
+            dtw_trajectory_score=dtw_score,
         )
 
         # Adjust game stars / thresholds based on difficulty setting

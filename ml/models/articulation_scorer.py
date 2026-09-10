@@ -1,10 +1,14 @@
 """Rehabilitation Target Verification & Articulation Scoring Engine.
 Delivers 95%+ Target Articulation Verification Accuracy and objective clinical metrics
-for speech rehabilitation and interactive gamified biofeedback.
+for speech rehabilitation and interactive gamified biofeedback, with dynamic DTW and viseme support.
 """
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, List
 import math
 import unicodedata
+import numpy as np
+
+from ml.pipelines.kinematics_engine import KinematicsEngine
+from ml.models.viseme_classifier import PhonemeVisemeMapper, VisemeClass
 
 
 def normalize_tamil_text(text: str) -> str:
@@ -52,14 +56,12 @@ PHONEME_KINEMATIC_TARGETS = {
 
 class ArticulationScorer:
     """Computes rigorous objective clinical rehabilitation metrics combining acoustic,
-
-    visual kinematic, and neuromuscular features.
+    visual kinematic, viseme sequences, and neuromuscular features.
     """
 
     @staticmethod
     def compute_target_match(target_phrase: str, recognized_transcript: str) -> Dict[str, Any]:
         """Calculates acoustic-phonetic Target Match Ratio (TMR) and CER.
-
         Provides 95%+ accuracy verification on clinical rehabilitation drills.
         """
         norm_target = normalize_tamil_text(target_phrase)
@@ -81,7 +83,6 @@ class ArticulationScorer:
         cer = edit_dist / target_len
 
         # Normalized Target Match Ratio (0.0 to 1.0)
-        # Matches of 95%+ mean virtually exact phonetic target achievement
         match_ratio = max(0.0, 1.0 - (edit_dist / target_len))
 
         # Precision boost: if transcript contains the target or matches closely
@@ -109,7 +110,6 @@ class ArticulationScorer:
         """Evaluates patient real-time facial tracking kinematics against articulatory targets."""
         target = PHONEME_KINEMATIC_TARGETS.get(target_vowel_type, PHONEME_KINEMATIC_TARGETS["default"])
 
-        # Check lip aperture fit
         min_lar, max_lar = target["min_lar"], target["max_lar"]
         min_mwr, max_mwr = target["min_mwr"], target["max_mwr"]
 
@@ -146,58 +146,132 @@ class ArticulationScorer:
             "within_target_bounds": bool(min_lar <= lip_aperture_ratio <= max_lar and min_mwr <= mouth_width_ratio <= max_mwr),
         }
 
+    @classmethod
+    def evaluate_dynamic_kinematics(
+        cls,
+        trajectory: np.ndarray,
+        target_vowel_type: str = "default",
+        fps: float = 30.0,
+    ) -> Dict[str, Any]:
+        """Evaluates continuous articulatory trajectory over time using DTW and derivative kinematics."""
+        t_len = trajectory.shape[0] if trajectory is not None else 0
+        if t_len < 2:
+            return {
+                "trajectory_score": 0.5,
+                "dtw_similarity": 0.5,
+                "smoothness": 1.0,
+                "cues": {"spatial": "Hold position steadily", "temporal": "Begin movement when ready"},
+            }
+
+        # 1. Derivatives
+        derivs = KinematicsEngine.compute_derivatives(trajectory, fps=fps)
+        smoothness = KinematicsEngine.compute_movement_smoothness(derivs["jerk"], derivs["velocity"])
+        peak_velocity = float(np.max(np.linalg.norm(derivs["velocity"], axis=-1)))
+
+        # 2. Dynamic Time Warping
+        canonical = KinematicsEngine.generate_canonical_trajectory(target_vowel_type, num_frames=max(t_len, 15))
+        dtw_dist, dtw_sim = KinematicsEngine.fast_dtw_distance(trajectory, canonical)
+
+        # 3. Bilateral Symmetry (feature 20)
+        mean_symmetry = float(np.mean(trajectory[:, 20]))
+
+        # Dynamic trajectory composite score
+        trajectory_score = round(float((dtw_sim * 0.5) + (smoothness * 0.3) + (mean_symmetry * 0.2)), 4)
+
+        # Actionable clinical feedback cues
+        spatial_cue = "Good lip range of motion."
+        temporal_cue = "Articulatory timing matched target well."
+        symmetry_cue = "Bilateral lip symmetry is balanced."
+
+        if dtw_sim < 0.60:
+            spatial_cue = f"Focus on matching the {target_vowel_type} mouth opening curve."
+        if smoothness < 0.40:
+            temporal_cue = "Movement is jerky or hesitant—practice a smoother, relaxed transition."
+        if mean_symmetry < 0.75:
+            symmetry_cue = f"Facial corner lag detected ({round(mean_symmetry*100, 1)}% symmetry)—engage both lip corners equally."
+
+        return {
+            "trajectory_score": trajectory_score,
+            "dtw_similarity": dtw_sim,
+            "dtw_distance": dtw_dist,
+            "smoothness": smoothness,
+            "peak_velocity": round(peak_velocity, 4),
+            "bilateral_symmetry": round(mean_symmetry, 4),
+            "cues": {
+                "spatial": spatial_cue,
+                "temporal": temporal_cue,
+                "symmetry": symmetry_cue,
+            },
+        }
+
     @staticmethod
     def compute_composite_rehab_score(
         acoustic_match: float,
         kinematic_score: Optional[float] = None,
         emg_symmetry: Optional[float] = None,
         eeg_engagement: Optional[float] = None,
+        viseme_match_score: Optional[float] = None,
+        dtw_trajectory_score: Optional[float] = None,
     ) -> Dict[str, Any]:
         """Calculates the comprehensive multimodal clinical rehabilitation mastery score.
-
-        Weights active modalities dynamically and generates game feedback metrics.
+        Weights active modalities dynamically (Acoustic, Kinematics, Visemes, sEMG, EEG)
+        and generates game feedback metrics.
         """
         scores = [acoustic_match]
-        weights = [0.50]  # Acoustic has 50% baseline weight
+        weights = [0.50]  # Acoustic baseline weight
 
         if kinematic_score is not None:
             scores.append(kinematic_score)
-            weights.append(0.30)  # Vision kinematics 30%
+            weights.append(0.20)
+
+        if viseme_match_score is not None:
+            scores.append(viseme_match_score)
+            weights.append(0.15)  # Visual speech viseme alignment
+
+        if dtw_trajectory_score is not None:
+            scores.append(dtw_trajectory_score)
+            weights.append(0.10)  # Dynamic motor trajectory
 
         if emg_symmetry is not None:
             scores.append(emg_symmetry)
-            weights.append(0.10)  # sEMG neuromuscular 10%
+            weights.append(0.025)  # sEMG neuromuscular
 
         if eeg_engagement is not None:
             scores.append(eeg_engagement)
-            weights.append(0.10)  # EEG cortical 10%
+            weights.append(0.025)  # EEG cortical
+
+        # If acoustic match is low (e.g. dysarthric whisper/slur) but viseme & kinematics are high,
+        # grant dynamic visual compensation boost
+        visual_boost = 0.0
+        if viseme_match_score is not None and viseme_match_score >= 0.80 and acoustic_match < 0.60:
+            visual_boost = 0.15 * viseme_match_score
 
         # Normalize weights
         total_w = sum(weights)
         norm_weights = [w / total_w for w in weights]
 
-        composite = sum(s * w for s, w in zip(scores, norm_weights))
+        composite = min(1.0, sum(s * w for s, w in zip(scores, norm_weights)) + visual_boost)
         composite_pct = round(composite * 100.0, 1)
 
         # Clinical Category
         if composite_pct >= 95.0:
             category = "TARGET_MASTERED"
-            badge = "★ Clinical Target Mastered (95%+)"
+            badge = "[Clinical Target Mastered 95%+]"
             game_stars = 3
             encouragement = "Outstanding! Perfect articulatory execution."
         elif composite_pct >= 85.0:
             category = "STRONG_PROGRESS"
-            badge = "▲ Strong Progress"
+            badge = "[Strong Progress]"
             game_stars = 2
             encouragement = "Great job! Very close to clinical target."
         elif composite_pct >= 70.0:
             category = "APPROXIMATED"
-            badge = "● Approximated"
+            badge = "[Approximated]"
             game_stars = 1
             encouragement = "Good effort! Practice lip placement for next attempt."
         else:
             category = "NEEDS_PRACTICE"
-            badge = "■ Needs Practice"
+            badge = "[Needs Practice]"
             game_stars = 0
             encouragement = "Take a breath and try again at a relaxed pace."
 
@@ -211,6 +285,9 @@ class ArticulationScorer:
             "modalities_used": len(scores),
             "acoustic_match_pct": round(acoustic_match * 100.0, 1),
             "kinematic_match_pct": round(kinematic_score * 100.0, 1) if kinematic_score is not None else None,
+            "viseme_match_pct": round(viseme_match_score * 100.0, 1) if viseme_match_score is not None else None,
+            "dtw_trajectory_pct": round(dtw_trajectory_score * 100.0, 1) if dtw_trajectory_score is not None else None,
             "emg_symmetry_pct": round(emg_symmetry * 100.0, 1) if emg_symmetry is not None else None,
             "eeg_engagement_pct": round(eeg_engagement * 100.0, 1) if eeg_engagement is not None else None,
+            "visual_compensation_boost": round(visual_boost, 4),
         }
