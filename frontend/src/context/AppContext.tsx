@@ -35,7 +35,6 @@ import {
   clearTokens,
   API_BASE_URL
 } from '../api/client';
-import { INITIAL_EXERCISES } from '../data/initialData';
 import { REHAB_LEVELS } from '../data/rehabLevels';
 
 export interface StreakStatus {
@@ -360,7 +359,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [highestUnlockedLevel, setHighestUnlockedLevel] = useState<number>(1);
   const [completedLevelNumbers, setCompletedLevelNumbers] = useState<number[]>([]);
 
-  const [exercises] = useState<SpeechExercise[]>(INITIAL_EXERCISES);
+  const [exercises, setExercises] = useState<SpeechExercise[]>([]);
   const [currentExerciseIndex, setCurrentExerciseIndex] = useState<number>(0);
   
   // Real backend records initialized to empty arrays (Zero fake data)
