@@ -356,9 +356,30 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [activeTab, setActiveTab] = useState<string>('home');
 
   const [rehabLevels] = useState<RehabLevel[]>(REHAB_LEVELS);
-  const [currentLevelNumber, setCurrentLevelNumberState] = useState<number>(1);
-  const [highestUnlockedLevel, setHighestUnlockedLevel] = useState<number>(1);
-  const [completedLevelNumbers, setCompletedLevelNumbers] = useState<number[]>([]);
+  const [currentLevelNumber, setCurrentLevelNumberState] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('neurospeech_current_level');
+      if (saved) return Math.max(1, Math.min(100, Number(saved) || 1));
+    } catch {}
+    return 1;
+  });
+  const [highestUnlockedLevel, setHighestUnlockedLevel] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('neurospeech_highest_unlocked');
+      if (saved) return Math.max(1, Math.min(100, Number(saved) || 1));
+    } catch {}
+    return 1;
+  });
+  const [completedLevelNumbers, setCompletedLevelNumbers] = useState<number[]>(() => {
+    try {
+      const saved = localStorage.getItem('neurospeech_completed_levels');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch {}
+    return [];
+  });
 
   const [exercises, setExercises] = useState<SpeechExercise[]>([]);
   const [currentExerciseIndex, setCurrentExerciseIndex] = useState<number>(0);
@@ -837,6 +858,49 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const completeLevel = (levelNum: number, attemptData: Omit<PatientAttempt, 'id' | 'timestamp'>) => {
     recordPatientAttempt(attemptData);
+
+    // If attempt passed or was saved as satisfactory, mark level as complete and unlock next
+    if (attemptData.attemptStatus === 'saved' || attemptData.signalQuality !== 'poor') {
+      setCompletedLevelNumbers(prev => {
+        const next = prev.includes(levelNum) ? prev : [...prev, levelNum];
+        try {
+          localStorage.setItem('neurospeech_completed_levels', JSON.stringify(next));
+        } catch {}
+        return next;
+      });
+
+      setHighestUnlockedLevel(prev => {
+        const next = Math.max(prev, Math.min(100, levelNum + 1));
+        try {
+          localStorage.setItem('neurospeech_highest_unlocked', String(next));
+        } catch {}
+        return next;
+      });
+
+      // Advance current level number if user just completed their highest level
+      setCurrentLevelNumberState(prev => {
+        if (prev === levelNum) {
+          const next = Math.min(100, levelNum + 1);
+          try {
+            localStorage.setItem('neurospeech_current_level', String(next));
+          } catch {}
+          return next;
+        }
+        return prev;
+      });
+
+      // Extend practice streak
+      recordPracticeDay();
+    }
+
+    // Submit attempt to backend asynchronously
+    rehabApi.submitAttempt({
+      level_number: levelNum,
+      target_text: attemptData.exerciseId || `Level ${levelNum}`,
+      language: 'ta-IN',
+      recognized_transcript: attemptData.transcriptDetected,
+      recording_duration_seconds: attemptData.durationSeconds,
+    }).catch(() => {});
   };
 
   const recordPatientAttempt = (attemptData: Omit<PatientAttempt, 'id' | 'timestamp'>) => {
@@ -851,6 +915,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const setCurrentLevelNumber = (levelNum: number) => {
     const clamped = Math.max(1, Math.min(100, levelNum));
     setCurrentLevelNumberState(clamped);
+    try {
+      localStorage.setItem('neurospeech_current_level', String(clamped));
+    } catch {}
   };
 
   const resetLevelProgress = async () => {
@@ -862,6 +929,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setCurrentLevelNumberState(1);
     setHighestUnlockedLevel(1);
     setCompletedLevelNumbers([]);
+    try {
+      localStorage.removeItem('neurospeech_current_level');
+      localStorage.removeItem('neurospeech_highest_unlocked');
+      localStorage.removeItem('neurospeech_completed_levels');
+    } catch {}
     addToast('Progress Reset', 'Rehabilitation game progress reset to Level 1.', 'info');
   };
 

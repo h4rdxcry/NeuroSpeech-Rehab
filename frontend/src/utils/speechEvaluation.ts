@@ -4,6 +4,8 @@
  * phonetic character matching, and real acoustic energy levels.
  */
 
+import { VisualPredictionResult } from './visualLipReader';
+
 export interface SpeechEvaluationResult {
   speechDetected: boolean;
   transcript: string;
@@ -12,6 +14,9 @@ export interface SpeechEvaluationResult {
   feedbackMessage: string;
   actionableTip?: string;
   acousticQuality: 'good' | 'fair' | 'poor';
+  visualMatch?: boolean;
+  visualConfidence?: number;
+  visemeSequence?: string;
 }
 
 /**
@@ -87,29 +92,37 @@ export function evaluateAttempt(
   transcript: string | null,
   peakAudioLevel: number,
   recordingSeconds: number,
-  language: 'ta-IN' | 'en-IN'
+  language: 'ta-IN' | 'en-IN',
+  visualPrediction?: VisualPredictionResult | null
 ): SpeechEvaluationResult {
   const normTarget = normalizeSpeechText(targetText);
   const normTranscript = transcript ? normalizeSpeechText(transcript) : '';
+  const hasVisualMatch = !!(visualPrediction && visualPrediction.isTargetMatch);
 
-  // Case 1: Insufficient volume / no audio activity detected
-  if (peakAudioLevel < 12 && recordingSeconds < 1.5) {
+  // Case 1: Visual lip-reading match (Works silently or alongside audio)
+  if (hasVisualMatch && visualPrediction) {
+    const audioSimilarity = normTranscript.length > 0 ? calculateTextSimilarity(normTarget, normTranscript) : 0;
+    const combinedScore = Math.max(audioSimilarity, visualPrediction.visualConfidence);
+
     return {
-      speechDetected: false,
-      transcript: normTranscript,
-      isMatch: false,
-      matchScore: 0,
-      feedbackMessage: "Let's try that once more.",
-      actionableTip: 'Try speaking a little louder into your microphone.',
-      acousticQuality: 'poor',
+      speechDetected: true,
+      transcript: normTranscript.length > 0 ? (transcript || targetText) : visualPrediction.predictedWord,
+      isMatch: true,
+      matchScore: combinedScore,
+      feedbackMessage: normTranscript.length > 0
+        ? `Speech and lip movement verified! Articulation sequence: ${visualPrediction.visemeSequenceString}`
+        : `Visual lip movement matched! Recognized: "${visualPrediction.predictedWord}"`,
+      actionableTip: visualPrediction.articulatoryFeedback || 'Well-articulated lip movement and vowel projection.',
+      acousticQuality: peakAudioLevel > 30 ? 'good' : 'fair',
+      visualMatch: true,
+      visualConfidence: visualPrediction.visualConfidence,
+      visemeSequence: visualPrediction.visemeSequenceString
     };
   }
 
   // Case 2: Transcript was captured by Speech Recognition
   if (normTranscript.length > 0) {
     const similarity = calculateTextSimilarity(normTarget, normTranscript);
-    
-    // For single words or short phrases, threshold is 0.45; for long phrases, 0.4
     const threshold = normTarget.split(' ').length > 4 ? 0.35 : 0.45;
 
     if (similarity >= threshold) {
@@ -120,6 +133,9 @@ export function evaluateAttempt(
         matchScore: similarity,
         feedbackMessage: 'Speech detected clearly and exercise completed.',
         acousticQuality: peakAudioLevel > 35 ? 'good' : 'fair',
+        visualMatch: false,
+        visualConfidence: visualPrediction?.visualConfidence,
+        visemeSequence: visualPrediction?.visemeSequenceString
       };
     } else {
       // Transcript captured but words differed
@@ -129,24 +145,46 @@ export function evaluateAttempt(
         isMatch: false,
         matchScore: similarity,
         feedbackMessage: "Let's try that once more.",
-        actionableTip: language === 'ta-IN' 
+        actionableTip: visualPrediction?.articulatoryFeedback || (language === 'ta-IN' 
           ? 'Listen to the pronunciation and pronounce each Tamil syllable clearly.' 
-          : 'Listen to the audio guidance and repeat the words at a comfortable pace.',
+          : 'Listen to the audio guidance and repeat the words at a comfortable pace.'),
         acousticQuality: 'fair',
+        visualMatch: false,
+        visualConfidence: visualPrediction?.visualConfidence,
+        visemeSequence: visualPrediction?.visemeSequenceString
       };
     }
   }
 
-  // Case 3: No speech transcript captured
+  // Case 3: Insufficient volume / no audio and no visual match
+  if (peakAudioLevel < 12 && recordingSeconds < 1.5 && !visualPrediction?.isMotionDetected) {
+    return {
+      speechDetected: false,
+      transcript: '',
+      isMatch: false,
+      matchScore: 0,
+      feedbackMessage: "Let's try that once more.",
+      actionableTip: 'Speak into your microphone or move your lips deliberately in front of the camera.',
+      acousticQuality: 'poor',
+      visualMatch: false
+    };
+  }
+
+  // Case 4: General non-match
   return {
-    speechDetected: peakAudioLevel > 14,
-    transcript: '',
+    speechDetected: peakAudioLevel > 14 || !!visualPrediction?.isMotionDetected,
+    transcript: visualPrediction?.isMotionDetected ? visualPrediction.predictedWord : '',
     isMatch: false,
-    matchScore: 0.0,
-    feedbackMessage: "We couldn't evaluate this attempt. Please try speaking clearly into your microphone.",
-    actionableTip: language === 'ta-IN' 
-      ? 'Speak clearly into the microphone and pronounce each Tamil syllable distinctly.' 
-      : 'Speak clearly into the microphone and repeat the target word at a comfortable pace.',
+    matchScore: visualPrediction ? visualPrediction.matchScore : 0.0,
+    feedbackMessage: visualPrediction?.isMotionDetected
+      ? `Observed lip sequence: ${visualPrediction.visemeSequenceString}. Focus on target shape.`
+      : "We couldn't evaluate this attempt. Please speak or move your lips clearly.",
+    actionableTip: visualPrediction?.articulatoryFeedback || (language === 'ta-IN' 
+      ? 'Pronounce each Tamil syllable distinctly and ensure your mouth is well lit.' 
+      : 'Repeat the target word at a comfortable pace and keep your face centered.'),
     acousticQuality: peakAudioLevel > 35 ? 'good' : (peakAudioLevel > 14 ? 'fair' : 'poor'),
+    visualMatch: false,
+    visualConfidence: visualPrediction?.visualConfidence,
+    visemeSequence: visualPrediction?.visemeSequenceString
   };
 }

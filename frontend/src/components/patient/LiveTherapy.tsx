@@ -12,6 +12,12 @@ import { evaluateAttempt, SpeechEvaluationResult } from '../../utils/speechEvalu
 import { cameraApi } from '../../api/client';
 import { faceMeshTracker, LiveArticulatoryTelemetry } from '../../utils/faceMeshTracker';
 import { 
+  visualLipReader, 
+  VisualPredictionResult, 
+  VisualSpeechPhonetics, 
+  VISEME_SHORT_CODES 
+} from '../../utils/visualLipReader';
+import { 
   Mic, 
   Video, 
   Volume2, 
@@ -29,7 +35,8 @@ import {
   Keyboard,
   HelpCircle,
   Flame,
-  Terminal
+  Terminal,
+  Eye
 } from 'lucide-react';
 
 export const LiveTherapy: React.FC = () => {
@@ -86,6 +93,7 @@ export const LiveTherapy: React.FC = () => {
   const [faceDetected, setFaceDetected] = useState(false);
   const [latestLandmarks, setLatestLandmarks] = useState<number[][]>([]);
   const [telemetry, setTelemetry] = useState<LiveArticulatoryTelemetry | null>(null);
+  const [visualPrediction, setVisualPrediction] = useState<VisualPredictionResult | null>(null);
   const [showDiagnostics, setShowDiagnostics] = useState(true);
   const isTrackingRef = useRef(false);
 
@@ -100,14 +108,20 @@ export const LiveTherapy: React.FC = () => {
       if (!isActive) return;
       setFaceDetected(isFaceDetected);
       setLatestLandmarks(landmarks);
-      setTelemetry(tel || null);
+      if (tel) {
+        setTelemetry(tel);
+        visualLipReader.processFrame(tel.apertureRatio, tel.widthRatio, tel.jawDisplacementX);
+        const vocabList = rehabLevels.map(l => l.targetText);
+        const pred = visualLipReader.decodeCurrentBuffer(currentLevel.targetText, currentLevel.language, vocabList);
+        setVisualPrediction(pred);
+      }
     });
 
     return () => {
       isActive = false;
       faceMeshTracker.stopTrackingLoop();
     };
-  }, [hasPermissions, cameraStatus, mediaStream]);
+  }, [hasPermissions, cameraStatus, mediaStream, currentLevel, rehabLevels]);
 
   // Refs
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -421,6 +435,9 @@ export const LiveTherapy: React.FC = () => {
     setLastTranscript(null);
     setEvaluationResult(null);
 
+    // Start continuous visual lip-reading trajectory capture
+    visualLipReader.startAttempt();
+
     // Recording duration timer
     timerRef.current = setInterval(() => {
       setRecordingSeconds(prev => {
@@ -457,7 +474,7 @@ export const LiveTherapy: React.FC = () => {
     }
   };
 
-  // Stop attempt and evaluate with authentic criteria
+  // Stop attempt and evaluate with visual lip-reading and audio recognition
   const handleStopAttempt = useCallback(() => {
     if (timerRef.current) {
       clearInterval(timerRef.current);
@@ -472,13 +489,24 @@ export const LiveTherapy: React.FC = () => {
       }
     }
 
-    // Evaluate immediately using measured audio level, transcript, and target text (no fake setTimeout delay)
+    // Stop visual lip recording and decode sequence against target & vocabulary
+    visualLipReader.stopAttempt();
+    const vocabList = rehabLevels.map(l => l.targetText);
+    const visualResult = visualLipReader.decodeCurrentBuffer(
+      currentLevel.targetText,
+      currentLevel.language,
+      vocabList
+    );
+    setVisualPrediction(visualResult);
+
+    // Evaluate immediately using measured audio level, transcript, and visual lip motion
     const result = evaluateAttempt(
       currentLevel.targetText,
       lastTranscript,
       peakAudioLevel,
       Math.max(recordingSeconds, 1.5),
-      currentLevel.language
+      currentLevel.language,
+      visualResult
     );
 
     setEvaluationResult(result);
@@ -493,7 +521,7 @@ export const LiveTherapy: React.FC = () => {
         durationSeconds: Math.max(recordingSeconds, 2),
         signalQuality: result.acousticQuality,
         attemptStatus: 'saved',
-        modelVersion: `Browser-WebSpeechAPI (${currentLevel.language})`
+        modelVersion: visualResult.isTargetMatch ? 'Visual-LipReading-DTW' : `Browser-WebSpeechAPI (${currentLevel.language})`
       });
 
       // If optional verbal confirmation accessibility setting is enabled, provide calm spoken affirmation
@@ -514,11 +542,44 @@ export const LiveTherapy: React.FC = () => {
         durationSeconds: Math.max(recordingSeconds, 1),
         signalQuality: result.acousticQuality,
         attemptStatus: result.speechDetected ? 'saved' : 'no_speech',
-        modelVersion: `Browser-WebSpeechAPI (${currentLevel.language})`
+        modelVersion: visualResult.isTargetMatch ? 'Visual-LipReading-DTW' : `Browser-WebSpeechAPI (${currentLevel.language})`
       });
     }
   }, [currentLevel, lastTranscript, peakAudioLevel, recordingSeconds, completeLevel,
-    submitRehabAttempt, speakCalmSuccessConfirmation]);
+    submitRehabAttempt, speakCalmSuccessConfirmation, rehabLevels]);
+
+  // Quick clear level directly from live visual lip match
+  const handleQuickClearVisualMatch = useCallback(() => {
+    if (!visualPrediction || !visualPrediction.isTargetMatch) return;
+    const result = evaluateAttempt(
+      currentLevel.targetText,
+      null,
+      peakAudioLevel || 40,
+      2.0,
+      currentLevel.language,
+      visualPrediction
+    );
+    setEvaluationResult(result);
+    setAttemptState('result');
+
+    completeLevel(currentLevel.level, {
+      exerciseId: `lvl-${currentLevel.level}`,
+      transcriptDetected: visualPrediction.predictedWord,
+      speechDetected: true,
+      durationSeconds: 2,
+      signalQuality: 'good',
+      attemptStatus: 'saved',
+      modelVersion: 'Visual-LipReading-DTW'
+    });
+
+    if (verbalConfirmationRef.current) {
+      speakCalmSuccessConfirmation(currentLevel.language);
+    }
+
+    if ([10, 25, 50, 75, 100].includes(currentLevel.level)) {
+      setMilestoneCelebrationLevel(currentLevel.level);
+    }
+  }, [currentLevel, peakAudioLevel, visualPrediction, completeLevel, speakCalmSuccessConfirmation]);
 
   // Proceed to next level
   const handleContinueNextLevel = () => {
@@ -1120,7 +1181,13 @@ export const LiveTherapy: React.FC = () => {
                   faceMeshTracker.startTracking(videoEl, (landmarks, isFaceDetected, tel) => {
                     setFaceDetected(isFaceDetected);
                     setLatestLandmarks(landmarks);
-                    if (tel) setTelemetry(tel);
+                    if (tel) {
+                      setTelemetry(tel);
+                      visualLipReader.processFrame(tel.apertureRatio, tel.widthRatio, tel.jawDisplacementX);
+                      const vocabList = rehabLevels.map(l => l.targetText);
+                      const pred = visualLipReader.decodeCurrentBuffer(currentLevel.targetText, currentLevel.language, vocabList);
+                      setVisualPrediction(pred);
+                    }
                   });
                 }
               }}
@@ -1208,6 +1275,79 @@ export const LiveTherapy: React.FC = () => {
                 {audioLevel}%
               </span>
             </div>
+          </div>
+
+          {/* ======================================================== */}
+          {/* LIVE VISUAL LIP-READING PREDICTION BANNER                */}
+          {/* ======================================================== */}
+          <div className="mt-3 rounded-2xl bg-gradient-to-r from-slate-950 via-slate-900 to-slate-950 border border-cyan-500/40 p-4 text-white shadow-lg">
+            <div className="flex items-center justify-between border-b border-cyan-500/20 pb-2 mb-3">
+              <div className="flex items-center gap-2">
+                <Eye className="w-4 h-4 text-cyan-400 animate-pulse" />
+                <span className="text-xs font-bold uppercase tracking-wider text-cyan-200">
+                  Live Visual Lip-Reading Prediction
+                </span>
+              </div>
+              <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold border ${
+                visualPrediction?.isTargetMatch
+                  ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/60 animate-pulse'
+                  : visualPrediction?.isMotionDetected
+                  ? 'bg-blue-500/20 text-blue-300 border-blue-500/40'
+                  : 'bg-slate-800 text-slate-400 border-slate-700'
+              }`}>
+                {visualPrediction?.isTargetMatch
+                  ? '✓ Target Match Locked'
+                  : visualPrediction?.isMotionDetected
+                  ? 'Tracking Lip Articulation'
+                  : 'Awaiting Lip Motion'}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {/* Predicted Word from Lip Movement */}
+              <div className="bg-black/50 p-3 rounded-xl border border-white/10 flex flex-col justify-between">
+                <span className="text-[10px] uppercase font-bold text-slate-400">
+                  Predicted Word (From Lip Movement):
+                </span>
+                <div className="flex items-baseline gap-2 mt-1">
+                  <span className={`text-2xl sm:text-3xl font-extrabold tracking-tight ${
+                    visualPrediction?.isTargetMatch ? 'text-emerald-400' : 'text-cyan-300'
+                  }`}>
+                    {visualPrediction?.predictedWord || 'Move lips...'}
+                  </span>
+                  {visualPrediction && visualPrediction.visualConfidence > 0 && (
+                    <span className="text-xs font-mono font-bold text-emerald-300">
+                      ({Math.round(visualPrediction.visualConfidence * 100)}% Match)
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {/* Articulatory Viseme Sequence */}
+              <div className="bg-black/50 p-3 rounded-xl border border-white/10 flex flex-col justify-between">
+                <span className="text-[10px] uppercase font-bold text-slate-400">
+                  Articulatory Viseme Trajectory:
+                </span>
+                <div className="text-xs font-mono text-cyan-300 mt-1 truncate" title={visualPrediction?.visemeSequenceString}>
+                  {visualPrediction?.visemeSequenceString || 'Open/close lips to generate sequence'}
+                </div>
+                <span className="text-[10px] text-slate-400 mt-1 block truncate">
+                  Target: {VisualSpeechPhonetics.textToVisemes(currentLevel.targetText, currentLevel.language).map(v => VISEME_SHORT_CODES[v]).join(' → ')}
+                </span>
+              </div>
+            </div>
+
+            {/* Quick Action Button to Clear Level When Target Matched */}
+            {visualPrediction?.isTargetMatch && attemptState !== 'result' && (
+              <button
+                type="button"
+                onClick={handleQuickClearVisualMatch}
+                className="mt-3 w-full py-2.5 px-4 rounded-xl bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-lg animate-pulse transition-all cursor-pointer"
+              >
+                <Check className="w-4 h-4 stroke-[3]" />
+                <span>✓ "{currentLevel.targetText}" Recognized ({Math.round(visualPrediction.visualConfidence * 100)}%) — Press Enter or Click to Clear Level & Proceed ↵</span>
+              </button>
+            )}
           </div>
 
           {/* Developer-Mode Live Diagnostic Telemetry HUD (Runtime Truth Audit) */}
