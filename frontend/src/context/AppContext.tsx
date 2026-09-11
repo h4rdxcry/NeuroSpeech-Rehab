@@ -877,18 +877,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         return next;
       });
 
-      // Advance current level number if user just completed their highest level
-      setCurrentLevelNumberState(prev => {
-        if (prev === levelNum) {
-          const next = Math.min(100, levelNum + 1);
-          try {
-            localStorage.setItem('neurospeech_current_level', String(next));
-          } catch {}
-          return next;
-        }
-        return prev;
-      });
-
       // Extend practice streak
       recordPracticeDay();
     }

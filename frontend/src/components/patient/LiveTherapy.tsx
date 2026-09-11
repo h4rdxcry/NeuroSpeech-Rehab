@@ -663,6 +663,12 @@ export const LiveTherapy: React.FC = () => {
   const handleContinueNextLevelRef = useRef(handleContinueNextLevel);
   handleContinueNextLevelRef.current = handleContinueNextLevel;
 
+  const handleQuickClearVisualMatchRef = useRef(handleQuickClearVisualMatch);
+  handleQuickClearVisualMatchRef.current = handleQuickClearVisualMatch;
+
+  const visualPredictionRef = useRef(visualPrediction);
+  visualPredictionRef.current = visualPrediction;
+
   const handleRetryCurrentLevelRef = useRef(handleRetryCurrentLevel);
   handleRetryCurrentLevelRef.current = handleRetryCurrentLevel;
 
@@ -770,6 +776,14 @@ export const LiveTherapy: React.FC = () => {
           e.preventDefault();
           handleContinueNextLevelRef.current();
           setSrAnnouncement(`Advancing to Level ${Math.min(100, currentLevelRef.current.level + 1)}.`);
+          return;
+        }
+
+        // If live visual lip reading matched target, Enter clears level and proceeds
+        if (attemptStateRef.current !== 'result' && visualPredictionRef.current?.isTargetMatch) {
+          e.preventDefault();
+          handleQuickClearVisualMatchRef.current();
+          setSrAnnouncement(`Recognized ${currentLevelRef.current.targetText}. Level completed.`);
           return;
         }
 

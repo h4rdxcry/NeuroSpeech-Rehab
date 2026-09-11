@@ -584,6 +584,9 @@ export const PatientHome: React.FC = () => {
   }, [resetLevelProgress]);
 
   // Sync mutable refs
+  const visualPredictionRef = useRef(visualPrediction);
+  visualPredictionRef.current = visualPrediction;
+
   handleStopAttemptRef.current = handleStopAttempt;
   handleContinueNextLevelRef.current = handleContinueNextLevel;
   handleStartAttemptRef.current = handleStartAttempt;
@@ -598,7 +601,7 @@ export const PatientHome: React.FC = () => {
         e.preventDefault();
         if (attemptStateRef.current === 'result') {
           handleContinueNextLevelRef.current();
-        } else if (visualPrediction?.isTargetMatch) {
+        } else if (visualPredictionRef.current?.isTargetMatch) {
           handleQuickClearVisualMatchRef.current();
         } else if (attemptStateRef.current === 'ready') {
           handleStartAttemptRef.current();
@@ -610,7 +613,7 @@ export const PatientHome: React.FC = () => {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [visualPrediction]);
+  }, []);
 
 
   return (

@@ -116,36 +116,61 @@ export class VisualSpeechPhonetics {
     'ௌ': VisemeClass.ROUNDED_VOWEL
   };
 
+  // Comprehensive clinical canonical dictionary for rehab levels 1 to 25 + common phrases
+  private static CANONICAL_VISEMES: Record<string, VisemeClass[]> = {
+    // Stage 1: Beginner (Levels 1–10)
+    'அம்மா': [VisemeClass.OPEN_VOWEL, VisemeClass.BILABIAL, VisemeClass.OPEN_VOWEL],
+    'hello': [VisemeClass.SPREAD_VOWEL, VisemeClass.DENTAL_ALVEOLAR, VisemeClass.ROUNDED_VOWEL],
+    'அப்பா': [VisemeClass.OPEN_VOWEL, VisemeClass.BILABIAL, VisemeClass.OPEN_VOWEL],
+    'yes': [VisemeClass.SPREAD_VOWEL, VisemeClass.DENTAL_ALVEOLAR],
+    'நீர்': [VisemeClass.DENTAL_ALVEOLAR, VisemeClass.SPREAD_VOWEL, VisemeClass.DENTAL_ALVEOLAR],
+    'no': [VisemeClass.DENTAL_ALVEOLAR, VisemeClass.ROUNDED_VOWEL],
+    'பால்': [VisemeClass.BILABIAL, VisemeClass.OPEN_VOWEL, VisemeClass.DENTAL_ALVEOLAR],
+    'good': [VisemeClass.VELAR_PALATAL, VisemeClass.ROUNDED_VOWEL, VisemeClass.DENTAL_ALVEOLAR],
+    'கண்': [VisemeClass.VELAR_PALATAL, VisemeClass.OPEN_VOWEL, VisemeClass.DENTAL_ALVEOLAR],
+    'water': [VisemeClass.ROUNDED_VOWEL, VisemeClass.OPEN_VOWEL, VisemeClass.DENTAL_ALVEOLAR],
+
+    // Stage 2: Foundation (Levels 11–25)
+    'வணக்கம்': [VisemeClass.LABIODENTAL, VisemeClass.OPEN_VOWEL, VisemeClass.DENTAL_ALVEOLAR, VisemeClass.VELAR_PALATAL, VisemeClass.BILABIAL],
+    'morning': [VisemeClass.BILABIAL, VisemeClass.ROUNDED_VOWEL, VisemeClass.SPREAD_VOWEL, VisemeClass.VELAR_PALATAL],
+    'நன்றி': [VisemeClass.DENTAL_ALVEOLAR, VisemeClass.OPEN_VOWEL, VisemeClass.DENTAL_ALVEOLAR, VisemeClass.SPREAD_VOWEL],
+    'please': [VisemeClass.BILABIAL, VisemeClass.DENTAL_ALVEOLAR, VisemeClass.SPREAD_VOWEL, VisemeClass.DENTAL_ALVEOLAR],
+    'சாப்பாடு': [VisemeClass.DENTAL_ALVEOLAR, VisemeClass.OPEN_VOWEL, VisemeClass.BILABIAL, VisemeClass.OPEN_VOWEL, VisemeClass.ROUNDED_VOWEL],
+    'help': [VisemeClass.SPREAD_VOWEL, VisemeClass.DENTAL_ALVEOLAR, VisemeClass.BILABIAL],
+    'தண்ணீர்': [VisemeClass.DENTAL_ALVEOLAR, VisemeClass.OPEN_VOWEL, VisemeClass.DENTAL_ALVEOLAR, VisemeClass.SPREAD_VOWEL, VisemeClass.DENTAL_ALVEOLAR],
+    'doctor': [VisemeClass.DENTAL_ALVEOLAR, VisemeClass.ROUNDED_VOWEL, VisemeClass.VELAR_PALATAL, VisemeClass.DENTAL_ALVEOLAR],
+    'வலி': [VisemeClass.LABIODENTAL, VisemeClass.OPEN_VOWEL, VisemeClass.DENTAL_ALVEOLAR, VisemeClass.SPREAD_VOWEL],
+    'today': [VisemeClass.DENTAL_ALVEOLAR, VisemeClass.ROUNDED_VOWEL, VisemeClass.DENTAL_ALVEOLAR, VisemeClass.SPREAD_VOWEL],
+    'மருந்து': [VisemeClass.BILABIAL, VisemeClass.OPEN_VOWEL, VisemeClass.DENTAL_ALVEOLAR, VisemeClass.ROUNDED_VOWEL, VisemeClass.DENTAL_ALVEOLAR],
+    'family': [VisemeClass.LABIODENTAL, VisemeClass.OPEN_VOWEL, VisemeClass.BILABIAL, VisemeClass.SPREAD_VOWEL, VisemeClass.DENTAL_ALVEOLAR],
+    'மூச்சு': [VisemeClass.BILABIAL, VisemeClass.ROUNDED_VOWEL, VisemeClass.DENTAL_ALVEOLAR, VisemeClass.ROUNDED_VOWEL],
+    'listen': [VisemeClass.DENTAL_ALVEOLAR, VisemeClass.SPREAD_VOWEL, VisemeClass.DENTAL_ALVEOLAR],
+    'உதவி': [VisemeClass.ROUNDED_VOWEL, VisemeClass.DENTAL_ALVEOLAR, VisemeClass.LABIODENTAL, VisemeClass.SPREAD_VOWEL],
+
+    // Common clinical phrases
+    'good morning': [VisemeClass.VELAR_PALATAL, VisemeClass.ROUNDED_VOWEL, VisemeClass.BILABIAL, VisemeClass.ROUNDED_VOWEL, VisemeClass.SPREAD_VOWEL],
+    'thank you': [VisemeClass.DENTAL_ALVEOLAR, VisemeClass.OPEN_VOWEL, VisemeClass.VELAR_PALATAL, VisemeClass.SPREAD_VOWEL, VisemeClass.ROUNDED_VOWEL]
+  };
+
   /**
    * Converts a Tamil or English word/phrase into an expected canonical sequence of Visemes.
+   * Automatically recognizes script (Tamil Unicode vs English Latin) to prevent cross-language pollution.
    */
-  public static textToVisemes(text: string, language: 'ta-IN' | 'en-IN'): VisemeClass[] {
+  public static textToVisemes(text: string, language?: 'ta-IN' | 'en-IN'): VisemeClass[] {
     const clean = text.trim().toLowerCase();
     if (!clean) return [VisemeClass.NEUTRAL_REST];
 
-    // Explicit Tamil clinical targets
-    if (clean === 'அம்மா') {
-      return [VisemeClass.OPEN_VOWEL, VisemeClass.BILABIAL, VisemeClass.OPEN_VOWEL];
-    }
-    if (clean === 'அப்பா') {
-      return [VisemeClass.OPEN_VOWEL, VisemeClass.BILABIAL, VisemeClass.OPEN_VOWEL];
-    }
-    if (clean === 'வணக்கம்') {
-      return [VisemeClass.LABIODENTAL, VisemeClass.OPEN_VOWEL, VisemeClass.DENTAL_ALVEOLAR, VisemeClass.VELAR_PALATAL, VisemeClass.BILABIAL];
-    }
-    if (clean === 'நன்றி') {
-      return [VisemeClass.DENTAL_ALVEOLAR, VisemeClass.OPEN_VOWEL, VisemeClass.DENTAL_ALVEOLAR, VisemeClass.SPREAD_VOWEL];
-    }
-    if (clean === 'சாப்பாடு') {
-      return [VisemeClass.DENTAL_ALVEOLAR, VisemeClass.OPEN_VOWEL, VisemeClass.BILABIAL, VisemeClass.OPEN_VOWEL, VisemeClass.ROUNDED_VOWEL];
-    }
-    if (clean === 'தண்ணீர்') {
-      return [VisemeClass.DENTAL_ALVEOLAR, VisemeClass.OPEN_VOWEL, VisemeClass.DENTAL_ALVEOLAR, VisemeClass.SPREAD_VOWEL];
+    // 1. Direct canonical lookup
+    if (this.CANONICAL_VISEMES[clean]) {
+      return [...this.CANONICAL_VISEMES[clean]];
     }
 
-    if (language === 'ta-IN') {
+    // 2. Auto-detect language by Unicode block (U+0B80 to U+0BFF is Tamil)
+    const isTamil = /[\u0B80-\u0BFF]/.test(clean);
+
+    if (isTamil) {
       const visemes: VisemeClass[] = [];
-      const chars = Array.from(text);
+      const chars = Array.from(clean);
       for (let i = 0; i < chars.length; i++) {
         const c = chars[i];
         if (this.TAMIL_VOWELS[c] !== undefined) {
@@ -153,26 +178,16 @@ export class VisualSpeechPhonetics {
         } else if (this.TAMIL_CONSONANTS[c] !== undefined) {
           visemes.push(this.TAMIL_CONSONANTS[c]);
           const nextC = chars[i + 1];
+          // If no following dependent vowel sign and not pulli, consonant carries inherent open vowel 'அ'
           if (!nextC || (this.TAMIL_VOWELS[nextC] === undefined && nextC !== '்')) {
             visemes.push(VisemeClass.OPEN_VOWEL);
           }
         }
       }
-      return this.collapseConsecutive(visemes.length > 0 ? visemes : [VisemeClass.OPEN_VOWEL, VisemeClass.BILABIAL]);
+      return this.collapseConsecutive(visemes.length > 0 ? visemes : [VisemeClass.OPEN_VOWEL, VisemeClass.DENTAL_ALVEOLAR]);
     }
 
-    // English clinical targets
-    if (clean === 'hello') return [VisemeClass.SPREAD_VOWEL, VisemeClass.DENTAL_ALVEOLAR, VisemeClass.ROUNDED_VOWEL];
-    if (clean === 'yes') return [VisemeClass.SPREAD_VOWEL, VisemeClass.DENTAL_ALVEOLAR];
-    if (clean === 'no') return [VisemeClass.DENTAL_ALVEOLAR, VisemeClass.ROUNDED_VOWEL];
-    if (clean === 'water') return [VisemeClass.ROUNDED_VOWEL, VisemeClass.OPEN_VOWEL, VisemeClass.DENTAL_ALVEOLAR];
-    if (clean === 'good') return [VisemeClass.VELAR_PALATAL, VisemeClass.ROUNDED_VOWEL, VisemeClass.DENTAL_ALVEOLAR];
-    if (clean === 'morning') return [VisemeClass.BILABIAL, VisemeClass.ROUNDED_VOWEL, VisemeClass.SPREAD_VOWEL, VisemeClass.VELAR_PALATAL];
-    if (clean === 'good morning') return [VisemeClass.VELAR_PALATAL, VisemeClass.ROUNDED_VOWEL, VisemeClass.BILABIAL, VisemeClass.ROUNDED_VOWEL, VisemeClass.SPREAD_VOWEL];
-    if (clean === 'thank you') return [VisemeClass.DENTAL_ALVEOLAR, VisemeClass.OPEN_VOWEL, VisemeClass.VELAR_PALATAL, VisemeClass.SPREAD_VOWEL, VisemeClass.ROUNDED_VOWEL];
-    if (clean === 'please') return [VisemeClass.BILABIAL, VisemeClass.DENTAL_ALVEOLAR, VisemeClass.SPREAD_VOWEL, VisemeClass.DENTAL_ALVEOLAR];
-    if (clean === 'help') return [VisemeClass.SPREAD_VOWEL, VisemeClass.DENTAL_ALVEOLAR, VisemeClass.BILABIAL];
-
+    // English letter mapping
     const enMap: Record<string, VisemeClass> = {
       p: VisemeClass.BILABIAL, b: VisemeClass.BILABIAL, m: VisemeClass.BILABIAL,
       f: VisemeClass.LABIODENTAL, v: VisemeClass.LABIODENTAL,
@@ -276,31 +291,31 @@ export class VisualLipReaderEngine {
     confidence: number;
   } {
     // 1. Bilabial Closure: Lips pressed together or sealed
-    if (apertureRatio < 0.045) {
-      const conf = Math.min(0.99, 0.82 + (0.045 - apertureRatio) * 5);
+    if (apertureRatio < 0.050) {
+      const conf = Math.min(0.99, 0.82 + (0.050 - apertureRatio) * 5);
       return { viseme: VisemeClass.BILABIAL, confidence: Math.round(conf * 100) / 100 };
     }
 
     // 2. Open Vowel: Wide vertical mouth opening
-    if (apertureRatio > 0.16) {
-      const conf = Math.min(0.99, 0.80 + (apertureRatio - 0.16) * 2);
+    if (apertureRatio > 0.14) {
+      const conf = Math.min(0.99, 0.80 + (apertureRatio - 0.14) * 2);
       return { viseme: VisemeClass.OPEN_VOWEL, confidence: Math.round(conf * 100) / 100 };
     }
 
     // 3. Rounded Vowel: Pursing or rounding lips (width narrow, opening moderate)
-    if (widthRatio < 0.86 && apertureRatio > 0.05) {
-      const conf = Math.min(0.98, 0.78 + (0.86 - widthRatio) * 2);
+    if (widthRatio < 0.90 && apertureRatio > 0.045) {
+      const conf = Math.min(0.98, 0.78 + (0.90 - widthRatio) * 2);
       return { viseme: VisemeClass.ROUNDED_VOWEL, confidence: Math.round(conf * 100) / 100 };
     }
 
-    // 4. Spread Vowel: Wide mouth stretch
-    if (widthRatio > 1.04) {
-      const conf = Math.min(0.98, 0.78 + (widthRatio - 1.04) * 2);
+    // 4. Spread Vowel: Wide mouth stretch or smiling vowel posture
+    if (widthRatio > 0.99) {
+      const conf = Math.min(0.98, 0.78 + (widthRatio - 0.99) * 2);
       return { viseme: VisemeClass.SPREAD_VOWEL, confidence: Math.round(conf * 100) / 100 };
     }
 
     // 5. Labiodental: Slight opening with lower lip contact
-    if (apertureRatio < 0.085 && widthRatio >= 0.86 && widthRatio <= 1.04) {
+    if (apertureRatio < 0.085 && widthRatio >= 0.86 && widthRatio <= 0.99) {
       return { viseme: VisemeClass.LABIODENTAL, confidence: 0.84 };
     }
 
@@ -405,7 +420,7 @@ export class VisualLipReaderEngine {
 
     for (const candidate of allCandidates) {
       if (!candidate || candidate === targetText) continue;
-      const candVisemes = VisualSpeechPhonetics.textToVisemes(candidate, language);
+      const candVisemes = VisualSpeechPhonetics.textToVisemes(candidate);
       const score = this.computeDTWAlignment(collapsed, candVisemes);
       if (score > bestScore + 0.12) {
         bestScore = score;
@@ -413,42 +428,72 @@ export class VisualLipReaderEngine {
       }
     }
 
-    // 5. Target-specific articulatory verification boost
+    // 5. Target-specific multi-feature articulatory verification boost
     let verifiedBoost = 0.0;
     let feedback = 'Clear articulatory trajectory detected.';
 
-    // Check specific landmark transitions for clinical accuracy:
-    // e.g., "அம்மா" / "அப்பா" must exhibit bilabial closure + open vowel
-    if (targetVisemes.includes(VisemeClass.BILABIAL) && targetVisemes.includes(VisemeClass.OPEN_VOWEL)) {
-      const hasBilabial = collapsed.includes(VisemeClass.BILABIAL) || minAp < 0.045;
-      const hasOpenVowel = collapsed.includes(VisemeClass.OPEN_VOWEL) || maxAp > 0.16;
-      if (hasBilabial && hasOpenVowel) {
-        verifiedBoost += 0.35;
-        feedback = 'Excellent bilabial closure and open vowel projection!';
+    // Check specific landmark transitions for clinical accuracy across all target visemes:
+    // A. Bilabial Closure (B/P/M)
+    if (targetVisemes.includes(VisemeClass.BILABIAL)) {
+      if (collapsed.includes(VisemeClass.BILABIAL) || minAp < 0.050) {
+        verifiedBoost += 0.22;
+        feedback = 'Excellent bilabial closure!';
       }
-    } else if (targetVisemes.includes(VisemeClass.ROUNDED_VOWEL)) {
-      // e.g. "Hello", "Water", "Good morning"
-      if (collapsed.includes(VisemeClass.ROUNDED_VOWEL) || minW < 0.86) {
-        verifiedBoost += 0.30;
-        feedback = 'Great lip rounding shape and vocal resonance.';
+    }
+    // B. Open Vowel (AA/A)
+    if (targetVisemes.includes(VisemeClass.OPEN_VOWEL)) {
+      if (collapsed.includes(VisemeClass.OPEN_VOWEL) || maxAp > 0.13 || apertureRange > 0.05) {
+        verifiedBoost += 0.22;
+        feedback = 'Clear vertical open vowel projection!';
       }
-    } else if (targetVisemes.includes(VisemeClass.SPREAD_VOWEL)) {
-      // e.g. "Yes", "நன்றி"
-      if (collapsed.includes(VisemeClass.SPREAD_VOWEL) || maxW > 1.04) {
-        verifiedBoost += 0.30;
-        feedback = 'Good lateral spread and tongue position.';
+    }
+    // C. Rounded Vowel (OO/U/O)
+    if (targetVisemes.includes(VisemeClass.ROUNDED_VOWEL)) {
+      if (collapsed.includes(VisemeClass.ROUNDED_VOWEL) || minW < 0.90) {
+        verifiedBoost += 0.22;
+        feedback = 'Great lip rounding shape!';
+      }
+    }
+    // D. Spread Vowel (EE/I/E)
+    if (targetVisemes.includes(VisemeClass.SPREAD_VOWEL)) {
+      if (collapsed.includes(VisemeClass.SPREAD_VOWEL) || maxW > 0.98 || widthRange > 0.04) {
+        verifiedBoost += 0.22;
+        feedback = 'Good lateral spread and horizontal extension!';
+      }
+    }
+    // E. Dental / Alveolar (T/D/S/N/L)
+    if (targetVisemes.includes(VisemeClass.DENTAL_ALVEOLAR)) {
+      if (collapsed.includes(VisemeClass.DENTAL_ALVEOLAR)) {
+        verifiedBoost += 0.12;
+      }
+    }
+    // F. Velar / Palatal (K/G/J/Y)
+    if (targetVisemes.includes(VisemeClass.VELAR_PALATAL)) {
+      if (collapsed.includes(VisemeClass.VELAR_PALATAL)) {
+        verifiedBoost += 0.12;
       }
     }
 
     const boostedScore = Math.min(0.98, targetMatchScore + verifiedBoost);
-    const isMatch = (boostedScore >= 0.65) || (targetMatchScore >= 0.50);
+
+    // Robust matching criteria:
+    // 1) Boosted score meets threshold (>= 0.50)
+    // 2) Raw DTW match score meets threshold (>= 0.40)
+    // 3) Target word is the top vocabulary candidate and has detected articulatory alignment (>= 0.40)
+    const isMatch = (boostedScore >= 0.50) || 
+                    (targetMatchScore >= 0.40) || 
+                    (bestWord === targetText && boostedScore >= 0.40);
+
     const finalWord = isMatch ? targetText : bestWord;
-    const finalConfidence = isMatch ? boostedScore : Math.min(0.95, bestScore);
+    const finalConfidence = isMatch ? Math.max(boostedScore, 0.76) : Math.min(0.95, bestScore);
+
+    // If final predicted word matches the target, ensure isTargetMatch is TRUE so prompt appears
+    const isTargetMatch = isMatch || (finalWord.toLowerCase() === targetText.toLowerCase() && finalConfidence >= 0.45);
 
     return {
       predictedWord: finalWord,
       visualConfidence: Math.round(finalConfidence * 100) / 100,
-      isTargetMatch: isMatch,
+      isTargetMatch,
       matchScore: Math.round(finalConfidence * 100) / 100,
       observedVisemes: collapsed,
       targetVisemes,
