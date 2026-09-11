@@ -222,11 +222,21 @@ app.add_middleware(RequestSizeLimit)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS.split(",") if settings.ENVIRONMENT == "production" else ["*"],
-    allow_origin_regex=None if settings.ENVIRONMENT == "production" else r"^https?://.*",
+    allow_origin_regex=r"^https:\/\/.*\.vercel\.app$|^https?:\/\/localhost(:\d+)?$" if settings.ENVIRONMENT == "production" else r"^https?://.*",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.get("/health")
+@app.get("/")
+async def health_check():
+    return {
+        "status": "healthy",
+        "service": "NeuroSpeech Rehab API",
+        "version": settings.APP_VERSION,
+        "environment": settings.ENVIRONMENT
+    }
 
 app.include_router(auth.router, prefix="/api/v1/auth", tags=["auth"])
 app.include_router(participants.router, prefix="/api/v1/participants", tags=["participants"], dependencies=[Depends(require_roles("PATIENT", "RESEARCHER", "CLINICIAN", "ADMIN"))])
