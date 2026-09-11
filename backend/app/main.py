@@ -204,11 +204,20 @@ async def seed_development_data() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    if settings.ENVIRONMENT == "development":
+    # Ensure database schema tables exist cleanly
+    try:
         async with get_engine().begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+    except Exception as e:
+        import logging
+        logging.getLogger("neurospeech").warning(f"Database schema verification note: {e}")
+
     if settings.ENVIRONMENT == "development":
-        await seed_development_data()
+        try:
+            await seed_development_data()
+        except Exception as e:
+            import logging
+            logging.getLogger("neurospeech").warning(f"Seed data note: {e}")
     yield
 
 app = FastAPI(

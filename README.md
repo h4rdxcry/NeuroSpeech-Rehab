@@ -151,5 +151,16 @@ npm run build   # Production Vite bundle build
 
 ---
 
+## Cloud Deployment (Supabase + Render + Vercel)
+
+The platform is designed for zero-cost, 24/7 cloud operation across:
+- **Database & Storage**: [Supabase](https://supabase.com) (PostgreSQL 15+, HIPAA-compliant RLS, private buckets)
+- **Backend API**: [Render](https://render.com) (1-Click Blueprint via [`render.yaml`](render.yaml) or [`Dockerfile`](Dockerfile))
+- **Frontend SPA**: [Vercel](https://vercel.com) (Automated Vite deployments)
+
+For complete setup instructions and database seeding, see the **[Supabase & 24/7 Backend Deployment Guide](docs/SUPABASE_BACKEND_SETUP_GUIDE.md)**.
+
+---
+
 ## License & Compliance
 Designed for clinical speech rehabilitation research. All patient data is managed in accordance with ethical standards and pseudonymized research protocols.

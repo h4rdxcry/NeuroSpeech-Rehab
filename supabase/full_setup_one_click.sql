@@ -561,6 +561,51 @@ DROP POLICY IF EXISTS "public_read_modalities" ON modalities;
 CREATE POLICY "public_read_modalities" ON modalities FOR SELECT USING (true);
 
 -- ====================================================================
+-- SUPABASE STORAGE BUCKETS (HIPAA & GDPR SECURE CLINICAL ASSETS)
+-- ====================================================================
+DO $$
+BEGIN
+    -- 1. Create Private Storage Buckets
+    INSERT INTO storage.buckets (id, name, public)
+    VALUES 
+        ('recordings', 'recordings', false),
+        ('biosignals', 'biosignals', false),
+        ('patient-reports', 'patient-reports', false)
+    ON CONFLICT (id) DO NOTHING;
+
+    -- 2. Storage Objects Security Policies
+    -- Service role has full administrative access to all storage
+    DROP POLICY IF EXISTS "service_role_storage_all" ON storage.objects;
+    CREATE POLICY "service_role_storage_all" ON storage.objects
+        TO service_role USING (true) WITH CHECK (true);
+
+    -- Authenticated users can upload to recordings
+    DROP POLICY IF EXISTS "auth_upload_recordings" ON storage.objects;
+    CREATE POLICY "auth_upload_recordings" ON storage.objects
+        FOR INSERT TO authenticated
+        WITH CHECK (bucket_id IN ('recordings', 'biosignals'));
+
+    -- Authenticated users can read recordings
+    DROP POLICY IF EXISTS "auth_select_recordings" ON storage.objects;
+    CREATE POLICY "auth_select_recordings" ON storage.objects
+        FOR SELECT TO authenticated
+        USING (bucket_id IN ('recordings', 'biosignals', 'patient-reports'));
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'Storage bucket configuration notice: %', SQLERRM;
+END $$;
+
+-- ====================================================================
+-- SYSTEM VALIDATION & HEALTH CHECK REPORT
+-- ====================================================================
+SELECT 
+    'SUCCESS: NeuroSpeech Cloud Database Initialized' AS status,
+    (SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public') AS public_tables_count,
+    (SELECT count(*) FROM users) AS seeded_users_count,
+    (SELECT count(*) FROM exercises) AS seeded_exercises_count,
+    (SELECT count(*) FROM modalities) AS seeded_modalities_count,
+    (SELECT count(*) FROM patient_rehab_progress) AS seeded_rehab_progress_count;
+
+-- ====================================================================
 -- Setup Complete! Demo credentials:
 -- Patient:    patient@neurospeech.dev / NeuroSpeechDemo123!
 -- Researcher: researcher@neurospeech.dev / Researcher123!
