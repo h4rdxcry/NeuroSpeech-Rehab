@@ -372,19 +372,23 @@ export class VisualLipReaderEngine {
 
     // Anatomical hard limits for clear disambiguation
     const isStationary = Math.abs(apertureVel) < 0.08 && Math.abs(widthVel) < 0.08;
-    if (apertureRatio < 0.038) {
-      if (isStationary) {
-        return { viseme: VisemeClass.NEUTRAL_REST, confidence: 0.94 };
+    // 1. Closed or resting lips
+    if (apertureRatio < 0.055) {
+      if (isStationary || Math.abs(apertureVel) < 0.10) {
+        return { viseme: VisemeClass.NEUTRAL_REST, confidence: 0.95 };
       }
-      return { viseme: VisemeClass.BILABIAL, confidence: 0.96 };
+      return { viseme: VisemeClass.BILABIAL, confidence: 0.95 };
     }
-    if (apertureRatio > 0.25) {
+    // 2. Open mouth / vertical vowel opening
+    if (apertureRatio > 0.18) {
       return { viseme: VisemeClass.OPEN_VOWEL, confidence: 0.95 };
     }
-    if (widthRatio > 1.12 && apertureRatio < 0.20) {
+    // 3. Lateral spread (> 0.58 on 0.50 scale)
+    if (widthRatio > 0.58 && apertureRatio < 0.16) {
       return { viseme: VisemeClass.SPREAD_VOWEL, confidence: 0.94 };
     }
-    if (widthRatio < 0.76 && apertureRatio > 0.08) {
+    // 4. Lip rounding / pursing (< 0.44 on 0.50 scale)
+    if (widthRatio < 0.44 && apertureRatio > 0.07) {
       return { viseme: VisemeClass.ROUNDED_VOWEL, confidence: 0.92 };
     }
 
@@ -423,7 +427,35 @@ export class VisualLipReaderEngine {
       };
     }
 
-    // Inspect dynamic articulatory range in the recent window (last 45 frames)
+    // 1. Inspect immediate articulatory state (last 10 frames = ~300ms)
+    const immediateFrames = rawFrames.slice(-10);
+    let curMaxAp = 0.0;
+    let curSumAp = 0.0;
+    let curMaxVel = 0.0;
+    for (const f of immediateFrames) {
+      if (f.apertureRatio > curMaxAp) curMaxAp = f.apertureRatio;
+      curSumAp += f.apertureRatio;
+      const v = Math.abs(f.apertureVelocity || 0);
+      if (v > curMaxVel) curMaxVel = v;
+    }
+    const curAvgAp = curSumAp / (immediateFrames.length || 1);
+
+    // CRITICAL RULE 1: If mouth is currently closed (aperture < 0.058 and no active speech velocity)
+    if (curMaxAp < 0.058 && curMaxVel < 0.12) {
+      return {
+        predictedWord: 'Mouth Closed',
+        visualConfidence: 0.0,
+        isTargetMatch: false,
+        matchScore: 0.0,
+        observedVisemes: [VisemeClass.NEUTRAL_REST],
+        targetVisemes,
+        visemeSequenceString: 'REST',
+        articulatoryFeedback: `Mouth is closed. Open and mouth "${targetText}" clearly to start lip prediction.`,
+        isMotionDetected: false
+      };
+    }
+
+    // 2. Inspect dynamic articulatory range in the recent window (last 45 frames)
     const recentWindow = rawFrames.slice(-45);
     let minAp = 1.0;
     let maxAp = 0.0;
@@ -443,17 +475,16 @@ export class VisualLipReaderEngine {
     const apertureRange = maxAp - minAp;
     const widthRange = maxW - minW;
 
-    // Strict speech kinematic gate: requires genuine vertical excursion, horizontal stretch/rounding, or rapid speech velocity
-    const isMotionDetected = (
-      (maxAp >= 0.080 && apertureRange >= 0.050) ||
-      (widthRange >= 0.065) ||
-      (maxW >= 1.06 && widthRange >= 0.045) ||
-      (minW <= 0.84 && widthRange >= 0.045) ||
-      (maxApVel >= 0.18 && apertureRange >= 0.035)
-    );
+    // CRITICAL RULE 2: Over recent window, requires genuine vertical speech excursion, horizontal pursing/spread, or speech burst
+    // Note: Neutral mouth width is ~0.50 on 3D eye-normalized scale. Rounding < 0.44, Spread > 0.58.
+    const hasVerticalSpeechMovement = (maxAp >= 0.095 && apertureRange >= 0.055);
+    const hasHorizontalSpeechMovement = (widthRange >= 0.080 && (maxW >= 0.58 || minW <= 0.44));
+    const hasVelocitySpeechBurst = (maxApVel >= 0.22 && apertureRange >= 0.040);
+
+    const isMotionDetected = hasVerticalSpeechMovement || hasHorizontalSpeechMovement || hasVelocitySpeechBurst;
 
     if (!isMotionDetected) {
-      const restLabel = (minAp < 0.040) ? 'Mouth Closed' : 'Silent / Mouth Resting';
+      const restLabel = (curAvgAp < 0.055) ? 'Mouth Closed' : 'Silent / Mouth Resting';
       return {
         predictedWord: restLabel,
         visualConfidence: 0.0,
@@ -467,7 +498,7 @@ export class VisualLipReaderEngine {
       };
     }
 
-    // 1. Temporal Smoothing: 3-frame mode window to filter single-frame noise
+    // 3. Temporal Smoothing: 3-frame mode window to filter single-frame noise
     const smoothed: VisemeClass[] = [];
     for (let i = 0; i < recentWindow.length; i++) {
       const window = recentWindow.slice(Math.max(0, i - 1), Math.min(recentWindow.length, i + 2));
@@ -486,7 +517,7 @@ export class VisualLipReaderEngine {
       smoothed.push(bestViseme);
     }
 
-    // 2. Collapse consecutive identical frames (CTC reduction)
+    // 4. Collapse consecutive identical frames (CTC reduction)
     let collapsed = VisualSpeechPhonetics.collapseConsecutive(smoothed);
     // Strip leading/trailing REST frames if active speech visemes exist
     if (collapsed.length > 1 && collapsed.some(v => v !== VisemeClass.NEUTRAL_REST)) {
@@ -498,7 +529,7 @@ export class VisualLipReaderEngine {
       }
     }
 
-    // 3. Build candidate vocabulary pool based on language and active rehab words
+    // 5. Build candidate vocabulary pool based on language and active rehab words
     const defaultEnCandidates = ['hello', 'yes', 'no', 'water', 'good', 'help', 'please', 'today', 'family', 'doctor', 'listen', 'morning', 'thank you'];
     const defaultTaCandidates = ['அம்மா', 'அப்பா', 'நீர்', 'பால்', 'கண்', 'வணக்கம்', 'நன்றி', 'சாப்பாடு', 'வலி', 'மருந்து', 'மூச்சு', 'உதவி'];
     const languageDefaults = language === 'ta-IN' ? defaultTaCandidates : defaultEnCandidates;
@@ -509,7 +540,7 @@ export class VisualLipReaderEngine {
       ...languageDefaults
     ])).filter(w => typeof w === 'string' && w.trim().length > 0);
 
-    // 4. Score every candidate fairly without artificial target bias
+    // 6. Score every candidate fairly with strict phoneme presence verification
     interface CandidateEvaluation {
       word: string;
       score: number;
@@ -523,43 +554,51 @@ export class VisualLipReaderEngine {
       const candVisemes = VisualSpeechPhonetics.textToVisemes(candidate, language);
       const dtwScore = this.computeDTWAlignment(collapsed, candVisemes);
 
-      // Articulatory landmark verification for this specific candidate
       let candBoost = 0.0;
       let candFeedback = 'Articulation detected.';
 
-      // Bilabial check: candidate requires closed lips
+      // Minimum sequence length check: cannot match multi-viseme word from 1 gesture
+      if (candVisemes.length >= 2 && collapsed.length === 1) {
+        candBoost -= 0.30;
+      }
+
+      // Bilabial check: candidate requires closed lips /p, b, m/
       if (candVisemes.includes(VisemeClass.BILABIAL)) {
-        if (collapsed.includes(VisemeClass.BILABIAL) || (minAp < 0.045 && apertureRange >= 0.055)) {
-          candBoost += 0.15;
+        if (collapsed.includes(VisemeClass.BILABIAL)) {
+          candBoost += 0.12;
           candFeedback = 'Clear bilabial closure!';
-        } else if (minAp > 0.075) {
-          candBoost -= 0.15;
+        } else {
+          candBoost -= 0.35;
         }
       }
 
-      // Open vowel check: candidate requires vertical jaw opening
+      // Open vowel check: candidate requires vertical jaw opening /a, aa/
       if (candVisemes.includes(VisemeClass.OPEN_VOWEL)) {
-        if (collapsed.includes(VisemeClass.OPEN_VOWEL) || maxAp > 0.13 || apertureRange >= 0.060) {
-          candBoost += 0.15;
+        if (collapsed.includes(VisemeClass.OPEN_VOWEL) || maxAp > 0.16) {
+          candBoost += 0.12;
           candFeedback = 'Clear open vowel projection!';
-        } else if (maxAp < 0.075) {
-          candBoost -= 0.15;
+        } else {
+          candBoost -= 0.35;
         }
       }
 
-      // Rounded vowel check: candidate requires horizontal pursing/narrowing
+      // Rounded vowel check: candidate requires horizontal pursing/narrowing /o, u, w/ (< 0.44 on 0.50 scale)
       if (candVisemes.includes(VisemeClass.ROUNDED_VOWEL)) {
-        if (collapsed.includes(VisemeClass.ROUNDED_VOWEL) || minW < 0.88) {
-          candBoost += 0.15;
+        if (collapsed.includes(VisemeClass.ROUNDED_VOWEL) || minW < 0.44) {
+          candBoost += 0.12;
           candFeedback = 'Clear lip rounding!';
+        } else {
+          candBoost -= 0.35;
         }
       }
 
-      // Spread vowel check: candidate requires horizontal widening
+      // Spread vowel check: candidate requires horizontal widening /i, e/ (> 0.58 on 0.50 scale)
       if (candVisemes.includes(VisemeClass.SPREAD_VOWEL)) {
-        if (collapsed.includes(VisemeClass.SPREAD_VOWEL) || maxW > 1.02 || widthRange > 0.055) {
-          candBoost += 0.15;
+        if (collapsed.includes(VisemeClass.SPREAD_VOWEL) || maxW > 0.58) {
+          candBoost += 0.12;
           candFeedback = 'Clear lateral spread!';
+        } else {
+          candBoost -= 0.35;
         }
       }
 
@@ -595,30 +634,31 @@ export class VisualLipReaderEngine {
       feedback: 'Awaiting distinct articulation.'
     };
 
-    // 5. Honest Word vs Gesture determination
+    // 7. Confident Word vs Physical Gesture determination
     let finalWord: string;
     let finalConfidence: number;
     let isTargetMatch = false;
 
-    const isTargetWinner = bestCandidate.word.toLowerCase() === targetText.toLowerCase();
-
-    if (bestCandidate.score >= 0.48) {
+    // Minimum confident score of 0.65 required to assert a dictionary word
+    if (bestCandidate && bestCandidate.score >= 0.65) {
       finalWord = bestCandidate.word;
       finalConfidence = bestCandidate.score;
-      isTargetMatch = isTargetWinner && (bestCandidate.score >= 0.62);
+      const isTargetWinner = bestCandidate.word.toLowerCase() === targetText.toLowerCase();
+      isTargetMatch = isTargetWinner && (bestCandidate.score >= 0.70);
     } else {
-      if (maxAp > 0.14) {
-        finalWord = 'Open Vowel [a]';
-      } else if (maxW > 1.04) {
+      // Mouth is moving, but hasn't formed a distinct recognized dictionary word
+      if (curMaxAp > 0.16) {
+        finalWord = 'Open Mouth [a]';
+      } else if (maxW > 0.58) {
         finalWord = 'Lip Spread [i]';
-      } else if (minW < 0.86) {
+      } else if (minW < 0.44) {
         finalWord = 'Lip Rounding [o]';
       } else if (minAp < 0.045 && apertureRange > 0.055) {
         finalWord = 'Lip Closure [p/m]';
       } else {
         finalWord = 'Articulating...';
       }
-      finalConfidence = Math.max(0.20, Math.min(0.47, bestCandidate.score));
+      finalConfidence = Math.round(Math.max(0.15, (bestCandidate?.score || 0.25)) * 100) / 100;
       isTargetMatch = false;
     }
 

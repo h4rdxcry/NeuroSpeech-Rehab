@@ -541,6 +541,11 @@ class FaceMeshTrackerService {
       }
     }
 
+    if (apertureRatio < 0.055 && Math.abs(apertureVelocity) < 0.10) {
+      bestViseme = 'Neutral / Closed';
+      bestProb = 0.95;
+    }
+
     return {
       faceDetected: true,
       landmarkCount: landmarks.length,
