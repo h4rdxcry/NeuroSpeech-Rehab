@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS exercises (
 	configuration JSON, 
 	is_active BOOLEAN NOT NULL, 
 	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
+	updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL, 
 	PRIMARY KEY (id)
 );
 
@@ -428,6 +429,47 @@ CREATE TABLE IF NOT EXISTS predictions (
 	FOREIGN KEY(model_id) REFERENCES model_versions (id)
 );
 
+CREATE TABLE IF NOT EXISTS patient_rehab_progress (
+	id UUID NOT NULL,
+	patient_id UUID NOT NULL,
+	current_level INTEGER DEFAULT 1 NOT NULL,
+	highest_unlocked_level INTEGER DEFAULT 1 NOT NULL,
+	completed_levels JSON DEFAULT '[]'::json NOT NULL,
+	streak_count INTEGER DEFAULT 0 NOT NULL,
+	longest_streak INTEGER DEFAULT 0 NOT NULL,
+	last_practice_date DATE,
+	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL,
+	updated_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL,
+	PRIMARY KEY (id),
+	UNIQUE (patient_id),
+	FOREIGN KEY (patient_id) REFERENCES patients (id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS ix_patient_rehab_progress_patient ON patient_rehab_progress (patient_id);
+
+CREATE TABLE IF NOT EXISTS patient_level_attempts (
+	id UUID NOT NULL,
+	patient_id UUID NOT NULL,
+	session_id UUID,
+	level_number INTEGER NOT NULL,
+	target_text VARCHAR(255) NOT NULL,
+	language VARCHAR(16) NOT NULL,
+	transcript TEXT,
+	speech_detected BOOLEAN DEFAULT false NOT NULL,
+	match_score FLOAT DEFAULT 0.0 NOT NULL,
+	is_success BOOLEAN DEFAULT false NOT NULL,
+	metrics JSON,
+	created_at TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL,
+	PRIMARY KEY (id),
+	FOREIGN KEY (patient_id) REFERENCES patients (id) ON DELETE CASCADE,
+	FOREIGN KEY (session_id) REFERENCES sessions (id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS ix_patient_level_attempts_patient ON patient_level_attempts (patient_id);
+CREATE INDEX IF NOT EXISTS ix_patient_level_attempts_level ON patient_level_attempts (level_number);
+CREATE INDEX IF NOT EXISTS ix_patient_level_attempts_created ON patient_level_attempts (created_at DESC);
+
+
 
 -- NeuroSpeech Rehabilitation Platform - Clinical Demo Seed Data
 -- Idempotent Insertion into Supabase / PostgreSQL
@@ -456,6 +498,67 @@ INSERT INTO exercises (id, name, description, exercise_type, target_modalities, 
 INSERT INTO exercises (id, name, description, exercise_type, target_modalities, difficulty, duration_seconds, configuration, created_at, updated_at) VALUES ('f4444444-4444-4444-4444-444444444444', 'Deep Vowel Sustain (/a:/)', 'Sustained open vowel phonation assessing vocal stability, jitter, and shimmer.', 'speech', '["AUDIO", "VIDEO_FACIAL"]'::json, 'easy', 60, '{"target_vowel": "/a:/", "target_lar": 0.45, "target_mwr": 0.52}'::json, now(), now()) ON CONFLICT (id) DO NOTHING;
 INSERT INTO exercises (id, name, description, exercise_type, target_modalities, difficulty, duration_seconds, configuration, created_at, updated_at) VALUES ('f5555555-5555-5555-5555-555555555555', 'Symmetric Smile (/i:/)', 'Spreading lip gesture assessing zygomaticus major symmetry and oral aperture.', 'speech', '["VIDEO_FACIAL"]'::json, 'medium', 60, '{"target_vowel": "/i:/", "target_lar": 0.18, "target_mwr": 0.65}'::json, now(), now()) ON CONFLICT (id) DO NOTHING;
 
+-- 6. Initial Progress Record for Demo Patient
+INSERT INTO patient_rehab_progress (id, patient_id, current_level, highest_unlocked_level, completed_levels, streak_count, longest_streak, last_practice_date, created_at, updated_at)
+VALUES (
+    '11112222-3333-4444-5555-666677778888',
+    'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee',
+    1,
+    1,
+    '[]'::json,
+    1,
+    1,
+    CURRENT_DATE,
+    now(),
+    now()
+) ON CONFLICT (patient_id) DO NOTHING;
+
+-- ====================================================================
+-- ROW LEVEL SECURITY (RLS) & AUDITABLE HEALTHCARE DATA POLICIES
+-- ====================================================================
+-- Protects patient clinical data and HIPAA compliance in Supabase
+
+ALTER TABLE patients ENABLE ROW LEVEL SECURITY;
+ALTER TABLE patient_rehab_progress ENABLE ROW LEVEL SECURITY;
+ALTER TABLE patient_level_attempts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE sessions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE recordings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE research_participants ENABLE ROW LEVEL SECURITY;
+
+-- Backend Service Role has full administrative authority
+DROP POLICY IF EXISTS "service_role_full_access_patients" ON patients;
+CREATE POLICY "service_role_full_access_patients" ON patients TO service_role USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "service_role_full_access_progress" ON patient_rehab_progress;
+CREATE POLICY "service_role_full_access_progress" ON patient_rehab_progress TO service_role USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "service_role_full_access_attempts" ON patient_level_attempts;
+CREATE POLICY "service_role_full_access_attempts" ON patient_level_attempts TO service_role USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "service_role_full_access_sessions" ON sessions;
+CREATE POLICY "service_role_full_access_sessions" ON sessions TO service_role USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "service_role_full_access_recordings" ON recordings;
+CREATE POLICY "service_role_full_access_recordings" ON recordings TO service_role USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "service_role_full_access_audit_logs" ON audit_logs;
+CREATE POLICY "service_role_full_access_audit_logs" ON audit_logs TO service_role USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "service_role_full_access_users" ON users;
+CREATE POLICY "service_role_full_access_users" ON users TO service_role USING (true) WITH CHECK (true);
+
+DROP POLICY IF EXISTS "service_role_full_access_participants" ON research_participants;
+CREATE POLICY "service_role_full_access_participants" ON research_participants TO service_role USING (true) WITH CHECK (true);
+
+-- Public read-only tables (exercises, modalities)
+ALTER TABLE exercises ENABLE ROW LEVEL SECURITY;
+ALTER TABLE modalities ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "public_read_exercises" ON exercises;
+CREATE POLICY "public_read_exercises" ON exercises FOR SELECT USING (true);
+DROP POLICY IF EXISTS "public_read_modalities" ON modalities;
+CREATE POLICY "public_read_modalities" ON modalities FOR SELECT USING (true);
 
 -- ====================================================================
 -- Setup Complete! Demo credentials:
