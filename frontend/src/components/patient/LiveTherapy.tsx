@@ -634,7 +634,7 @@ export const LiveTherapy: React.FC = () => {
 
   // Quick clear level directly from live visual lip match
   const handleQuickClearVisualMatch = useCallback(() => {
-    if (!visualPrediction || !visualPrediction.isTargetMatch) return;
+    if (!visualPrediction || !visualPrediction.isTargetMatch || !visualPrediction.isMotionDetected) return;
     const result = evaluateAttempt(
       currentLevel.targetText,
       null,
@@ -864,7 +864,7 @@ export const LiveTherapy: React.FC = () => {
         }
 
         // If live visual lip reading matched target, Enter clears level and proceeds
-        if (attemptStateRef.current !== 'result' && visualPredictionRef.current?.isTargetMatch) {
+        if (attemptStateRef.current !== 'result' && visualPredictionRef.current?.isTargetMatch && visualPredictionRef.current?.isMotionDetected) {
           e.preventDefault();
           handleQuickClearVisualMatchRef.current();
           setSrAnnouncement(`Recognized ${currentLevelRef.current.targetText}. Level completed.`);

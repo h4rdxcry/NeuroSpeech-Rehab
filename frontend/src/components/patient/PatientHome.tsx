@@ -100,8 +100,8 @@ export const PatientHome: React.FC = () => {
         const pred = visualLipReader.decodeCurrentBuffer(currentLevel.targetText, currentLevel.language, vocabList);
         setVisualPrediction(pred);
 
-        // Auto-complete when target word is matched with high confidence during attempt
-        if (attemptStateRef.current === 'listening' && pred.isTargetMatch && pred.visualConfidence >= 0.70) {
+        // Auto-complete when target word is matched with high confidence during active speech attempt
+        if (attemptStateRef.current === 'listening' && pred.isMotionDetected && pred.isTargetMatch && pred.visualConfidence >= 0.72) {
           handleStopAttemptRef.current();
         }
       }
@@ -598,7 +598,7 @@ export const PatientHome: React.FC = () => {
 
   // Quick clear level directly from live visual match
   const handleQuickClearVisualMatch = useCallback(() => {
-    if (!visualPrediction || !visualPrediction.isTargetMatch) return;
+    if (!visualPrediction || !visualPrediction.isTargetMatch || !visualPrediction.isMotionDetected) return;
     const result = evaluateAttempt(
       currentLevel.targetText,
       null,
@@ -612,7 +612,7 @@ export const PatientHome: React.FC = () => {
 
     completeLevel(currentLevel.level, {
       exerciseId: `lvl-${currentLevel.level}`,
-      transcriptDetected: visualPrediction.predictedWord,
+      transcriptDetected: currentLevel.targetText,
       speechDetected: true,
       durationSeconds: 2,
       signalQuality: 'good',
@@ -685,7 +685,7 @@ export const PatientHome: React.FC = () => {
         e.preventDefault();
         if (attemptStateRef.current === 'result') {
           handleContinueNextLevelRef.current();
-        } else if (visualPredictionRef.current?.isTargetMatch) {
+        } else if (visualPredictionRef.current?.isTargetMatch && visualPredictionRef.current?.isMotionDetected) {
           handleQuickClearVisualMatchRef.current();
         } else if (attemptStateRef.current === 'ready') {
           handleStartAttemptRef.current();

@@ -371,7 +371,11 @@ export class VisualLipReaderEngine {
     const bestProb = expScores[bestViseme] / (sumExp || 1.0);
 
     // Anatomical hard limits for clear disambiguation
+    const isStationary = Math.abs(apertureVel) < 0.08 && Math.abs(widthVel) < 0.08;
     if (apertureRatio < 0.038) {
+      if (isStationary) {
+        return { viseme: VisemeClass.NEUTRAL_REST, confidence: 0.94 };
+      }
       return { viseme: VisemeClass.BILABIAL, confidence: 0.96 };
     }
     if (apertureRatio > 0.25) {
@@ -425,28 +429,40 @@ export class VisualLipReaderEngine {
     let maxAp = 0.0;
     let minW = 2.0;
     let maxW = 0.0;
+    let maxApVel = 0.0;
 
     for (const f of recentWindow) {
       if (f.apertureRatio < minAp) minAp = f.apertureRatio;
       if (f.apertureRatio > maxAp) maxAp = f.apertureRatio;
       if (f.widthRatio < minW) minW = f.widthRatio;
       if (f.widthRatio > maxW) maxW = f.widthRatio;
+      const v = Math.abs(f.apertureVelocity || 0);
+      if (v > maxApVel) maxApVel = v;
     }
 
     const apertureRange = maxAp - minAp;
     const widthRange = maxW - minW;
-    const isMotionDetected = (apertureRange > 0.035) || (widthRange > 0.045);
+
+    // Strict speech kinematic gate: requires genuine vertical excursion, horizontal stretch/rounding, or rapid speech velocity
+    const isMotionDetected = (
+      (maxAp >= 0.080 && apertureRange >= 0.050) ||
+      (widthRange >= 0.065) ||
+      (maxW >= 1.06 && widthRange >= 0.045) ||
+      (minW <= 0.84 && widthRange >= 0.045) ||
+      (maxApVel >= 0.18 && apertureRange >= 0.035)
+    );
 
     if (!isMotionDetected) {
+      const restLabel = (minAp < 0.040) ? 'Mouth Closed' : 'Silent / Mouth Resting';
       return {
-        predictedWord: 'Ready: Mouth word...',
+        predictedWord: restLabel,
         visualConfidence: 0.0,
         isTargetMatch: false,
         matchScore: 0.0,
-        observedVisemes: [],
+        observedVisemes: [VisemeClass.NEUTRAL_REST],
         targetVisemes,
-        visemeSequenceString: targetVisemes.map(v => VISEME_SHORT_CODES[v]).join(' → '),
-        articulatoryFeedback: `Mouth "${targetText}" clearly in front of the camera.`,
+        visemeSequenceString: 'REST',
+        articulatoryFeedback: `Mouth is at rest. Speak or mouth "${targetText}" clearly in front of camera.`,
         isMotionDetected: false
       };
     }
@@ -471,87 +487,140 @@ export class VisualLipReaderEngine {
     }
 
     // 2. Collapse consecutive identical frames (CTC reduction)
-    const collapsed = VisualSpeechPhonetics.collapseConsecutive(smoothed);
+    let collapsed = VisualSpeechPhonetics.collapseConsecutive(smoothed);
+    // Strip leading/trailing REST frames if active speech visemes exist
+    if (collapsed.length > 1 && collapsed.some(v => v !== VisemeClass.NEUTRAL_REST)) {
+      while (collapsed.length > 1 && collapsed[0] === VisemeClass.NEUTRAL_REST) {
+        collapsed.shift();
+      }
+      while (collapsed.length > 1 && collapsed[collapsed.length - 1] === VisemeClass.NEUTRAL_REST) {
+        collapsed.pop();
+      }
+    }
 
-    // 3. Compute DTW alignment against target
-    const targetMatchScore = this.computeDTWAlignment(collapsed, targetVisemes);
+    // 3. Build candidate vocabulary pool based on language and active rehab words
+    const defaultEnCandidates = ['hello', 'yes', 'no', 'water', 'good', 'help', 'please', 'today', 'family', 'doctor', 'listen', 'morning', 'thank you'];
+    const defaultTaCandidates = ['அம்மா', 'அப்பா', 'நீர்', 'பால்', 'கண்', 'வணக்கம்', 'நன்றி', 'சாப்பாடு', 'வலி', 'மருந்து', 'மூச்சு', 'உதவி'];
+    const languageDefaults = language === 'ta-IN' ? defaultTaCandidates : defaultEnCandidates;
 
-    // 4. Test candidate words to see if another word in vocabulary is a better match
-    const allCandidates = Array.from(new Set([targetText, ...vocabularyCandidates.slice(0, 15)]));
-    let bestWord = targetText;
-    let bestScore = targetMatchScore;
+    const allCandidates = Array.from(new Set([
+      targetText,
+      ...vocabularyCandidates,
+      ...languageDefaults
+    ])).filter(w => typeof w === 'string' && w.trim().length > 0);
+
+    // 4. Score every candidate fairly without artificial target bias
+    interface CandidateEvaluation {
+      word: string;
+      score: number;
+      visemes: VisemeClass[];
+      feedback: string;
+    }
+
+    const candidateScores: CandidateEvaluation[] = [];
 
     for (const candidate of allCandidates) {
-      if (!candidate || candidate === targetText) continue;
-      const candVisemes = VisualSpeechPhonetics.textToVisemes(candidate);
-      const score = this.computeDTWAlignment(collapsed, candVisemes);
-      if (score > bestScore + 0.12) {
-        bestScore = score;
-        bestWord = candidate;
+      const candVisemes = VisualSpeechPhonetics.textToVisemes(candidate, language);
+      const dtwScore = this.computeDTWAlignment(collapsed, candVisemes);
+
+      // Articulatory landmark verification for this specific candidate
+      let candBoost = 0.0;
+      let candFeedback = 'Articulation detected.';
+
+      // Bilabial check: candidate requires closed lips
+      if (candVisemes.includes(VisemeClass.BILABIAL)) {
+        if (collapsed.includes(VisemeClass.BILABIAL) || (minAp < 0.045 && apertureRange >= 0.055)) {
+          candBoost += 0.15;
+          candFeedback = 'Clear bilabial closure!';
+        } else if (minAp > 0.075) {
+          candBoost -= 0.15;
+        }
       }
+
+      // Open vowel check: candidate requires vertical jaw opening
+      if (candVisemes.includes(VisemeClass.OPEN_VOWEL)) {
+        if (collapsed.includes(VisemeClass.OPEN_VOWEL) || maxAp > 0.13 || apertureRange >= 0.060) {
+          candBoost += 0.15;
+          candFeedback = 'Clear open vowel projection!';
+        } else if (maxAp < 0.075) {
+          candBoost -= 0.15;
+        }
+      }
+
+      // Rounded vowel check: candidate requires horizontal pursing/narrowing
+      if (candVisemes.includes(VisemeClass.ROUNDED_VOWEL)) {
+        if (collapsed.includes(VisemeClass.ROUNDED_VOWEL) || minW < 0.88) {
+          candBoost += 0.15;
+          candFeedback = 'Clear lip rounding!';
+        }
+      }
+
+      // Spread vowel check: candidate requires horizontal widening
+      if (candVisemes.includes(VisemeClass.SPREAD_VOWEL)) {
+        if (collapsed.includes(VisemeClass.SPREAD_VOWEL) || maxW > 1.02 || widthRange > 0.055) {
+          candBoost += 0.15;
+          candFeedback = 'Clear lateral spread!';
+        }
+      }
+
+      // Dental / Alveolar
+      if (candVisemes.includes(VisemeClass.DENTAL_ALVEOLAR)) {
+        if (collapsed.includes(VisemeClass.DENTAL_ALVEOLAR)) {
+          candBoost += 0.08;
+        }
+      }
+
+      // Velar / Palatal
+      if (candVisemes.includes(VisemeClass.VELAR_PALATAL)) {
+        if (collapsed.includes(VisemeClass.VELAR_PALATAL)) {
+          candBoost += 0.08;
+        }
+      }
+
+      const totalScore = Math.min(0.98, Math.max(0.0, dtwScore + candBoost));
+      candidateScores.push({
+        word: candidate,
+        score: totalScore,
+        visemes: candVisemes,
+        feedback: candFeedback
+      });
     }
 
-    // 5. Target-specific multi-feature articulatory verification boost
-    let verifiedBoost = 0.0;
-    let feedback = 'Clear articulatory trajectory detected.';
+    // Sort descending by score
+    candidateScores.sort((a, b) => b.score - a.score);
+    const bestCandidate = candidateScores[0] || {
+      word: targetText,
+      score: 0.0,
+      visemes: targetVisemes,
+      feedback: 'Awaiting distinct articulation.'
+    };
 
-    // Check specific landmark transitions for clinical accuracy across all target visemes:
-    // A. Bilabial Closure (B/P/M)
-    if (targetVisemes.includes(VisemeClass.BILABIAL)) {
-      if (collapsed.includes(VisemeClass.BILABIAL) || minAp < 0.050) {
-        verifiedBoost += 0.22;
-        feedback = 'Excellent bilabial closure!';
-      }
-    }
-    // B. Open Vowel (AA/A)
-    if (targetVisemes.includes(VisemeClass.OPEN_VOWEL)) {
-      if (collapsed.includes(VisemeClass.OPEN_VOWEL) || maxAp > 0.13 || apertureRange > 0.05) {
-        verifiedBoost += 0.22;
-        feedback = 'Clear vertical open vowel projection!';
-      }
-    }
-    // C. Rounded Vowel (OO/U/O)
-    if (targetVisemes.includes(VisemeClass.ROUNDED_VOWEL)) {
-      if (collapsed.includes(VisemeClass.ROUNDED_VOWEL) || minW < 0.90) {
-        verifiedBoost += 0.22;
-        feedback = 'Great lip rounding shape!';
-      }
-    }
-    // D. Spread Vowel (EE/I/E)
-    if (targetVisemes.includes(VisemeClass.SPREAD_VOWEL)) {
-      if (collapsed.includes(VisemeClass.SPREAD_VOWEL) || maxW > 0.98 || widthRange > 0.04) {
-        verifiedBoost += 0.22;
-        feedback = 'Good lateral spread and horizontal extension!';
-      }
-    }
-    // E. Dental / Alveolar (T/D/S/N/L)
-    if (targetVisemes.includes(VisemeClass.DENTAL_ALVEOLAR)) {
-      if (collapsed.includes(VisemeClass.DENTAL_ALVEOLAR)) {
-        verifiedBoost += 0.12;
-      }
-    }
-    // F. Velar / Palatal (K/G/J/Y)
-    if (targetVisemes.includes(VisemeClass.VELAR_PALATAL)) {
-      if (collapsed.includes(VisemeClass.VELAR_PALATAL)) {
-        verifiedBoost += 0.12;
-      }
-    }
+    // 5. Honest Word vs Gesture determination
+    let finalWord: string;
+    let finalConfidence: number;
+    let isTargetMatch = false;
 
-    const boostedScore = Math.min(0.98, targetMatchScore + verifiedBoost);
+    const isTargetWinner = bestCandidate.word.toLowerCase() === targetText.toLowerCase();
 
-    // Robust matching criteria:
-    // 1) Boosted score meets threshold (>= 0.50)
-    // 2) Raw DTW match score meets threshold (>= 0.40)
-    // 3) Target word is the top vocabulary candidate and has detected articulatory alignment (>= 0.40)
-    const isMatch = (boostedScore >= 0.50) || 
-                    (targetMatchScore >= 0.40) || 
-                    (bestWord === targetText && boostedScore >= 0.40);
-
-    const finalWord = isMatch ? targetText : bestWord;
-    const finalConfidence = isMatch ? Math.max(boostedScore, 0.76) : Math.min(0.95, bestScore);
-
-    // If final predicted word matches the target, ensure isTargetMatch is TRUE so prompt appears
-    const isTargetMatch = isMatch || (finalWord.toLowerCase() === targetText.toLowerCase() && finalConfidence >= 0.45);
+    if (bestCandidate.score >= 0.48) {
+      finalWord = bestCandidate.word;
+      finalConfidence = bestCandidate.score;
+      isTargetMatch = isTargetWinner && (bestCandidate.score >= 0.62);
+    } else {
+      if (maxAp > 0.14) {
+        finalWord = 'Open Vowel [a]';
+      } else if (maxW > 1.04) {
+        finalWord = 'Lip Spread [i]';
+      } else if (minW < 0.86) {
+        finalWord = 'Lip Rounding [o]';
+      } else if (minAp < 0.045 && apertureRange > 0.055) {
+        finalWord = 'Lip Closure [p/m]';
+      } else {
+        finalWord = 'Articulating...';
+      }
+      finalConfidence = Math.max(0.20, Math.min(0.47, bestCandidate.score));
+      isTargetMatch = false;
+    }
 
     return {
       predictedWord: finalWord,
@@ -561,7 +630,7 @@ export class VisualLipReaderEngine {
       observedVisemes: collapsed,
       targetVisemes,
       visemeSequenceString: collapsed.map(v => VISEME_SHORT_CODES[v]).join(' → '),
-      articulatoryFeedback: feedback,
+      articulatoryFeedback: bestCandidate.feedback,
       isMotionDetected: true
     };
   }
@@ -574,6 +643,7 @@ export class VisualLipReaderEngine {
     const m = expected.length;
     if (n === 0 || m === 0) return 0.0;
 
+    // 1. Forward subsequence check (does observed contain expected?)
     let expIdx = 0;
     for (let i = 0; i < n; i++) {
       if (observed[i] === expected[expIdx]) {
@@ -581,7 +651,18 @@ export class VisualLipReaderEngine {
         if (expIdx >= m) break;
       }
     }
-    const subsequenceRatio = expIdx / m;
+    const fwdRatio = expIdx / m;
+
+    // 2. Reverse coverage check (does expected cover observed?)
+    let obsIdx = 0;
+    for (let j = 0; j < m; j++) {
+      if (expected[j] === observed[obsIdx]) {
+        obsIdx++;
+        if (obsIdx >= n) break;
+      }
+    }
+    const covRatio = obsIdx / n;
+    const matchRatio = (fwdRatio * 0.60) + (covRatio * 0.40);
 
     const dtw: number[][] = Array(n + 1).fill(0).map(() => Array(m + 1).fill(Infinity));
     dtw[0][0] = 0;
@@ -601,7 +682,10 @@ export class VisualLipReaderEngine {
     const maxPossibleDistance = Math.max(n, m) * 2.0;
     const dtwScore = Math.max(0, 1.0 - (totalDistance / maxPossibleDistance));
 
-    const blendedScore = (dtwScore * 0.45) + (subsequenceRatio * 0.55);
+    // Length difference penalty to avoid short 1-syllable words matching everything
+    const lenPenalty = Math.min(0.25, (Math.abs(n - m) / Math.max(n, m)) * 0.25);
+
+    const blendedScore = (dtwScore * 0.40) + (matchRatio * 0.60) - lenPenalty;
     return Math.min(1.0, Math.max(0.0, blendedScore));
   }
 
