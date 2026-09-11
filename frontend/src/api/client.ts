@@ -3,7 +3,29 @@
  * Strict Zero Fake Functionality: Direct binding to FastAPI backend endpoints.
  */
 
-export const API_BASE_URL = (import.meta as any).env?.VITE_API_URL || 'http://localhost:8000';
+function resolveInitialBaseUrl(): string {
+  try {
+    const custom = localStorage.getItem('neurospeech_custom_api_url');
+    if (custom && custom.trim().startsWith('http')) {
+      return custom.trim().replace(/\/+$/, '');
+    }
+  } catch {}
+  const envUrl = (import.meta as any).env?.VITE_API_URL;
+  if (envUrl && envUrl.trim().startsWith('http')) {
+    return envUrl.trim().replace(/\/+$/, '');
+  }
+  return 'http://localhost:8000';
+}
+
+export let API_BASE_URL = resolveInitialBaseUrl();
+
+export function setApiBaseUrl(url: string): void {
+  const clean = url.trim().replace(/\/+$/, '');
+  API_BASE_URL = clean;
+  try {
+    localStorage.setItem('neurospeech_custom_api_url', clean);
+  } catch {}
+}
 
 const TOKEN_KEY = 'neurospeech_access_token';
 const REFRESH_TOKEN_KEY = 'neurospeech_refresh_token';

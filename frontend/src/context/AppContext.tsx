@@ -33,7 +33,8 @@ import {
   getAccessToken,
   setTokens,
   clearTokens,
-  API_BASE_URL
+  API_BASE_URL,
+  setApiBaseUrl
 } from '../api/client';
 import { REHAB_LEVELS } from '../data/rehabLevels';
 
@@ -663,6 +664,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, []);
 
   const updateConnectionUrl = (url: string) => {
+    setApiBaseUrl(url);
     const updated: ConnectionConfig = {
       ...connection,
       endpointUrl: url,
@@ -673,6 +675,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const resetConnection = () => {
+    try {
+      localStorage.removeItem('neurospeech_custom_api_url');
+    } catch {}
+    setApiBaseUrl(DEFAULT_CONNECTION.endpointUrl);
     setConnection(DEFAULT_CONNECTION);
     testConnection();
     addToast('Endpoint Reset', 'Restored default research endpoint.', 'info');

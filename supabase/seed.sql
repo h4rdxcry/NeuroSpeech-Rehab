@@ -24,3 +24,19 @@ INSERT INTO exercises (id, name, description, exercise_type, target_modalities, 
 INSERT INTO exercises (id, name, description, exercise_type, target_modalities, difficulty, duration_seconds, configuration, created_at, updated_at) VALUES ('f3333333-3333-3333-3333-333333333333', 'அம்மா (Amma)', 'Tamil bilabial open-vowel resonant sustain.', 'speech', '["AUDIO", "VIDEO_FACIAL"]'::json, 'easy', 120, '{"target_phrase": "அம்மா", "phonemes": "/a/, /m/, /a:/"}'::json, now(), now()) ON CONFLICT (id) DO NOTHING;
 INSERT INTO exercises (id, name, description, exercise_type, target_modalities, difficulty, duration_seconds, configuration, created_at, updated_at) VALUES ('f4444444-4444-4444-4444-444444444444', 'Deep Vowel Sustain (/a:/)', 'Sustained open vowel phonation assessing vocal stability, jitter, and shimmer.', 'speech', '["AUDIO", "VIDEO_FACIAL"]'::json, 'easy', 60, '{"target_vowel": "/a:/", "target_lar": 0.45, "target_mwr": 0.52}'::json, now(), now()) ON CONFLICT (id) DO NOTHING;
 INSERT INTO exercises (id, name, description, exercise_type, target_modalities, difficulty, duration_seconds, configuration, created_at, updated_at) VALUES ('f5555555-5555-5555-5555-555555555555', 'Symmetric Smile (/i:/)', 'Spreading lip gesture assessing zygomaticus major symmetry and oral aperture.', 'speech', '["VIDEO_FACIAL"]'::json, 'medium', 60, '{"target_vowel": "/i:/", "target_lar": 0.18, "target_mwr": 0.65}'::json, now(), now()) ON CONFLICT (id) DO NOTHING;
+
+-- 6. Initial Progress Record for Demo Patient
+INSERT INTO patient_rehab_progress (id, patient_id, current_level, highest_unlocked_level, completed_levels, streak_count, longest_streak, last_practice_date, created_at, updated_at)
+VALUES (
+    '11112222-3333-4444-5555-666677778888',
+    'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee',
+    1,
+    1,
+    '[]'::json,
+    1,
+    1,
+    CURRENT_DATE,
+    now(),
+    now()
+) ON CONFLICT (patient_id) DO NOTHING;
+
