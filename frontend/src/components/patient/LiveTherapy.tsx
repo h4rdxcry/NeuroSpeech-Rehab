@@ -10,6 +10,7 @@ import { KeyboardShortcutsModal } from './KeyboardShortcutsModal';
 import { PracticeStreakModal } from './PracticeStreakModal';
 import { evaluateAttempt, SpeechEvaluationResult } from '../../utils/speechEvaluation';
 import { cameraApi } from '../../api/client';
+import { faceMeshTracker } from '../../utils/faceMeshTracker';
 import { 
   Mic, 
   Video, 
@@ -85,40 +86,23 @@ export const LiveTherapy: React.FC = () => {
   const [latestLandmarks, setLatestLandmarks] = useState<number[][]>([]);
   const isTrackingRef = useRef(false);
 
-  // Periodic frame tracking via FastAPI MediaPipe endpoint
+  // Real-time client-side MediaPipe FaceMesh & Lip Tracking
   useEffect(() => {
-    if (!hasPermissions || cameraStatus !== 'ready') return;
+    if (!hasPermissions || cameraStatus !== 'ready' || !videoRef.current) return;
 
-    const interval = setInterval(async () => {
-      if (isTrackingRef.current || !videoRef.current || videoRef.current.readyState < 2) return;
-      isTrackingRef.current = true;
-      try {
-        const offscreen = document.createElement('canvas');
-        offscreen.width = 320;
-        offscreen.height = 240;
-        const octx = offscreen.getContext('2d');
-        if (octx && videoRef.current) {
-          octx.drawImage(videoRef.current, 0, 0, 320, 240);
-          const base64 = offscreen.toDataURL('image/jpeg', 0.6).split(',')[1];
-          if (base64) {
-            const resp = await cameraApi.trackFrame(base64);
-            if (resp.status === 'TRACKED' && resp.landmarks && resp.landmarks.length > 0) {
-              setFaceDetected(true);
-              setLatestLandmarks(resp.landmarks);
-            } else {
-              setFaceDetected(false);
-              setLatestLandmarks([]);
-            }
-          }
-        }
-      } catch {
-        // network or server error handled gracefully
-      } finally {
-        isTrackingRef.current = false;
-      }
-    }, 400);
+    let isActive = true;
+    const videoEl = videoRef.current;
 
-    return () => clearInterval(interval);
+    faceMeshTracker.startTracking(videoEl, (landmarks, isFaceDetected) => {
+      if (!isActive) return;
+      setFaceDetected(isFaceDetected);
+      setLatestLandmarks(landmarks);
+    });
+
+    return () => {
+      isActive = false;
+      faceMeshTracker.stopTrackingLoop();
+    };
   }, [hasPermissions, cameraStatus]);
 
   // Refs
