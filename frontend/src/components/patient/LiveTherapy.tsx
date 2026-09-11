@@ -1133,12 +1133,31 @@ export const LiveTherapy: React.FC = () => {
             type="button"
             onClick={() => setIsLevelMapOpen(true)}
             aria-keyshortcuts="M"
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-200 hover:border-slate-300 bg-white text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors shadow-2xs"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-200 hover:border-slate-300 bg-white text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors shadow-2xs cursor-pointer"
             title="View 100-Level Journey Map (M)"
           >
             <Map className="w-3.5 h-3.5 text-[#2563EB]" />
             <span className="hidden sm:inline">View Journey</span>
             <span className="sm:hidden">Map</span>
+          </button>
+
+          {/* Reset to Level 1 Button */}
+          <button
+            id="live-therapy-reset-level-btn"
+            type="button"
+            onClick={() => {
+              resetLevelProgress();
+              setAttemptState('ready');
+              setEvaluationResult(null);
+              setLastTranscript(null);
+              setPeakAudioLevel(0);
+            }}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-200 hover:border-rose-200 bg-white hover:bg-rose-50 text-xs font-semibold text-slate-700 hover:text-rose-600 transition-colors shadow-2xs cursor-pointer select-none"
+            title="Reset progress back to Level 1 (Local only - preserves backend records)"
+          >
+            <RotateCcw className="w-3.5 h-3.5 text-slate-400 group-hover:text-rose-600" />
+            <span className="hidden sm:inline">Reset Level 1</span>
+            <span className="sm:hidden">Reset</span>
           </button>
 
           {/* Keyboard Shortcuts Guide Button */}

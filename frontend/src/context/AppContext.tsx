@@ -920,12 +920,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } catch {}
   };
 
-  const resetLevelProgress = async () => {
-    try {
-      await rehabApi.resetProgress();
-    } catch {
-      // ignore
-    }
+  const resetLevelProgress = () => {
     setCurrentLevelNumberState(1);
     setHighestUnlockedLevel(1);
     setCompletedLevelNumbers([]);
@@ -934,7 +929,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       localStorage.removeItem('neurospeech_highest_unlocked');
       localStorage.removeItem('neurospeech_completed_levels');
     } catch {}
-    addToast('Progress Reset', 'Rehabilitation game progress reset to Level 1.', 'info');
+    addToast('Progress Reset', 'Progress returned to Level 1.', 'info');
   };
 
   const finishCurrentSession = (): SessionRecord => {

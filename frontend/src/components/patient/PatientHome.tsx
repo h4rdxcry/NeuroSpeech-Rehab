@@ -54,6 +54,7 @@ export const PatientHome: React.FC = () => {
     completeLevel,
     submitRehabAttempt,
     setCurrentLevelNumber,
+    resetLevelProgress,
     addToast,
     streakStatus,
     recordPracticeDay
@@ -569,6 +570,19 @@ export const PatientHome: React.FC = () => {
     setPeakAudioLevel(0);
   };
 
+  // Reset progress back to Level 1 (Local only - preserves backend records)
+  const handleResetToLevel1 = useCallback(() => {
+    if (autoAdvanceTimerRef.current) {
+      clearTimeout(autoAdvanceTimerRef.current);
+      autoAdvanceTimerRef.current = null;
+    }
+    resetLevelProgress();
+    setAttemptState('ready');
+    setEvaluationResult(null);
+    setLastTranscript(null);
+    setPeakAudioLevel(0);
+  }, [resetLevelProgress]);
+
   // Sync mutable refs
   handleStopAttemptRef.current = handleStopAttempt;
   handleContinueNextLevelRef.current = handleContinueNextLevel;
@@ -652,10 +666,22 @@ export const PatientHome: React.FC = () => {
             id="open-journey-map-btn"
             type="button"
             onClick={() => setIsLevelMapOpen(true)}
-            className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-white hover:bg-slate-50 border border-slate-200 text-xs font-bold text-slate-700 hover:border-blue-300 transition-colors shadow-2xs"
+            className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-white hover:bg-slate-50 border border-slate-200 text-xs font-bold text-slate-700 hover:border-blue-300 transition-colors shadow-2xs cursor-pointer"
           >
             <Map className="w-3.5 h-3.5 text-[#2563EB]" />
             <span>View 100-Level Journey</span>
+          </button>
+
+          {/* Reset to Level 1 Button */}
+          <button
+            id="patient-home-reset-level-btn"
+            type="button"
+            onClick={handleResetToLevel1}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white hover:bg-rose-50 border border-slate-200 hover:border-rose-300 text-xs font-bold text-slate-600 hover:text-rose-600 transition-colors shadow-2xs cursor-pointer select-none"
+            title="Reset progress back to Level 1 (Local only - preserves backend records)"
+          >
+            <RotateCcw className="w-3.5 h-3.5 text-slate-400 group-hover:text-rose-600" />
+            <span>Reset to Level 1</span>
           </button>
         </div>
       </div>
@@ -1102,11 +1128,23 @@ export const PatientHome: React.FC = () => {
                   Level {currentLevel.level} • {currentLevel.stage}
                 </span>
 
-                <span className={`text-xs font-bold px-2.5 py-0.5 rounded-full ${
-                  currentLevel.language === 'ta-IN' ? 'bg-amber-100 text-amber-900' : 'bg-blue-100 text-blue-900'
-                }`}>
-                  {currentLevel.language === 'ta-IN' ? '🇮🇳 Tamil' : '🇬🇧 English'}
-                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleResetToLevel1}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-rose-50 border border-slate-200 hover:border-rose-200 text-[11px] font-semibold text-slate-600 hover:text-rose-600 transition-colors cursor-pointer select-none"
+                    title="Reset progress back to Level 1"
+                  >
+                    <RotateCcw className="w-3 h-3 text-slate-500 group-hover:text-rose-600" />
+                    <span>Reset Level 1</span>
+                  </button>
+
+                  <span className={`text-xs font-bold px-2.5 py-0.5 rounded-full ${
+                    currentLevel.language === 'ta-IN' ? 'bg-amber-100 text-amber-900' : 'bg-blue-100 text-blue-900'
+                  }`}>
+                    {currentLevel.language === 'ta-IN' ? '🇮🇳 Tamil' : '🇬🇧 English'}
+                  </span>
+                </div>
               </div>
 
               {/* TARGET PRONUNCIATION DISPLAY */}
