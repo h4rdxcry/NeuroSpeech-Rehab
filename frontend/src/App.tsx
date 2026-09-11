@@ -27,6 +27,9 @@ import { ResearchAnnotations } from './components/researcher/ResearchAnnotations
 import { ResearchEvaluation } from './components/researcher/ResearchEvaluation';
 import { ResearchModels } from './components/researcher/ResearchModels';
 
+// Settings Components
+import { UserSettings } from './components/settings/UserSettings';
+
 const AppContent: React.FC = () => {
   const { currentUser, role, activeTab } = useApp();
 
@@ -91,7 +94,7 @@ const AppContent: React.FC = () => {
         case 'models':
           return <ResearchModels />;
         case 'settings':
-          return <ClinicianSettings />;
+          return <UserSettings />;
         default:
           return <ResearchOverview />;
       }

@@ -2,8 +2,11 @@ import os
 import sys
 from pathlib import Path
 
-# Add backend to path so we can import app.models
-backend_path = Path(__file__).parent.parent.parent / "backend"
+# Add project root and backend to path so we can import ml and app.models
+project_root = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(project_root))
+
+backend_path = project_root / "backend"
 sys.path.insert(0, str(backend_path))
 
 # Add ml_training src to path

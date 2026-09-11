@@ -79,7 +79,13 @@ class MultimodalInferenceEngine:
             self.beam_decoder = VisemeBeamSearchDecoder(beam_width=8)
 
             # Auto-discover default trained checkpoints if not explicitly provided
-            root = Path(__file__).resolve().parents[2]
+            root = None
+            for p in Path(__file__).resolve().parents:
+                if (p / "ml_training" / "outputs").exists():
+                    root = p
+                    break
+            if root is None:
+                root = Path(__file__).resolve().parents[2]
             if weights_path is None:
                 default_mm = root / "ml_training" / "outputs" / "multimodal" / "multimodal_best.pt"
                 if default_mm.exists():

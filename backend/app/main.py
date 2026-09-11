@@ -241,7 +241,7 @@ app.add_middleware(
 @app.get("/")
 async def health_check():
     return {
-        "status": "healthy",
+        "status": "ok",
         "service": "NeuroSpeech Rehab API",
         "version": settings.APP_VERSION,
         "environment": settings.ENVIRONMENT
@@ -383,7 +383,3 @@ async def websocket_session(websocket: WebSocket, session_id: str, token: Any = 
                 except Exception:
                     pass
 
-
-@app.get("/health")
-async def health():
-    return {"status": "ok", "version": "0.2.0"}
