@@ -103,7 +103,7 @@ export const LiveTherapy: React.FC = () => {
       isActive = false;
       faceMeshTracker.stopTrackingLoop();
     };
-  }, [hasPermissions, cameraStatus]);
+  }, [hasPermissions, cameraStatus, mediaStream]);
 
   // Refs
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -221,7 +221,7 @@ export const LiveTherapy: React.FC = () => {
           const innerLips = [78, 191, 80, 81, 82, 13, 312, 311, 310, 415, 308, 324, 318, 402, 317, 14, 87, 178, 88, 95];
 
           ctx.save();
-          // Draw outer lips
+          // Draw outer lips with high-contrast neon styling
           ctx.beginPath();
           outerLips.forEach((idx, i) => {
             const pt = latestLandmarks[idx];
@@ -232,8 +232,10 @@ export const LiveTherapy: React.FC = () => {
             else ctx.lineTo(px, py);
           });
           ctx.closePath();
-          ctx.strokeStyle = attemptState === 'listening' ? 'rgba(16, 185, 129, 0.85)' : 'rgba(255, 255, 255, 0.7)';
-          ctx.lineWidth = 2.0;
+          ctx.strokeStyle = attemptState === 'listening' ? '#10B981' : '#38BDF8';
+          ctx.lineWidth = 2.5;
+          ctx.shadowColor = attemptState === 'listening' ? 'rgba(16, 185, 129, 0.7)' : 'rgba(56, 189, 248, 0.7)';
+          ctx.shadowBlur = 8;
           ctx.stroke();
 
           // Draw inner lips
@@ -247,20 +249,24 @@ export const LiveTherapy: React.FC = () => {
             else ctx.lineTo(px, py);
           });
           ctx.closePath();
-          ctx.strokeStyle = attemptState === 'listening' ? 'rgba(16, 185, 129, 0.6)' : 'rgba(255, 255, 255, 0.45)';
-          ctx.lineWidth = 1.5;
+          ctx.strokeStyle = attemptState === 'listening' ? '#34D399' : '#7DD3FC';
+          ctx.lineWidth = 1.8;
+          ctx.shadowBlur = 0;
           ctx.stroke();
 
-          // Key articulatory points
+          // Key articulatory points (corners, cupid's bow, inner center)
           [0, 13, 14, 17, 61, 291, 78, 308].forEach(idx => {
             const pt = latestLandmarks[idx];
             if (!pt) return;
             const px = (1 - pt[0]) * w;
             const py = pt[1] * h;
-            ctx.fillStyle = attemptState === 'listening' ? '#10B981' : '#60A5FA';
             ctx.beginPath();
-            ctx.arc(px, py, 2.5, 0, Math.PI * 2);
+            ctx.arc(px, py, 3.5, 0, Math.PI * 2);
+            ctx.fillStyle = '#FFFFFF';
             ctx.fill();
+            ctx.strokeStyle = '#0284C7';
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
           });
           ctx.restore();
         } else {
@@ -1069,6 +1075,16 @@ export const LiveTherapy: React.FC = () => {
               autoPlay
               playsInline
               muted
+              onLoadedMetadata={(e) => {
+                const videoEl = e.currentTarget;
+                videoEl.play().catch(() => {});
+                if (hasPermissions && cameraStatus === 'ready') {
+                  faceMeshTracker.startTracking(videoEl, (landmarks, isFaceDetected) => {
+                    setFaceDetected(isFaceDetected);
+                    setLatestLandmarks(landmarks);
+                  });
+                }
+              }}
               className="w-full h-full object-cover mirror-mode"
               style={{ transform: 'scaleX(-1)' }}
             />
@@ -1098,23 +1114,34 @@ export const LiveTherapy: React.FC = () => {
               </div>
 
               {/* Facial Tracking Status Pill */}
-              <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-black/65 backdrop-blur-md text-[11px] font-semibold text-white border border-white/10">
-                <Smile className="w-3.5 h-3.5 text-teal-400" />
-                <span>Face & Lip Tracking Active</span>
+              <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-black/65 backdrop-blur-md text-[11px] font-semibold border border-white/10">
+                {faceDetected ? (
+                  <>
+                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+                    <span className="text-emerald-300 font-bold">Lip & Articulation Locked</span>
+                  </>
+                ) : (
+                  <>
+                    <Smile className="w-3.5 h-3.5 text-amber-400 animate-pulse" />
+                    <span className="text-amber-200">Align Face in Frame</span>
+                  </>
+                )}
               </div>
             </div>
 
-            {/* Center: Face Guidance Positioning Cue */}
-            <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center">
-              <div className={`w-52 sm:w-60 h-64 sm:h-72 rounded-[46%] border-2 transition-all duration-300 ${
-                attemptState === 'listening'
-                  ? 'border-emerald-400/80 shadow-[0_0_25px_rgba(16,185,129,0.25)]'
-                  : 'border-white/35 shadow-[0_0_15px_rgba(255,255,255,0.15)]'
-              }`} />
-              <span className="text-[11px] font-medium text-white/75 mt-2 bg-black/50 px-2.5 py-0.5 rounded-full backdrop-blur-xs">
-                Position face inside frame
-              </span>
-            </div>
+            {/* Center: Face Guidance Positioning Cue - Only visible until face is detected */}
+            {!faceDetected && (
+              <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center animate-pulse">
+                <div className={`w-52 sm:w-60 h-64 sm:h-72 rounded-[46%] border-2 transition-all duration-300 ${
+                  attemptState === 'listening'
+                    ? 'border-emerald-400/80 shadow-[0_0_25px_rgba(16,185,129,0.25)]'
+                    : 'border-white/35 shadow-[0_0_15px_rgba(255,255,255,0.15)]'
+                }`} />
+                <span className="text-[11px] font-medium text-white/75 mt-2 bg-black/50 px-2.5 py-0.5 rounded-full backdrop-blur-xs">
+                  Position face inside frame
+                </span>
+              </div>
+            )}
 
             {/* Bottom: Real Measured Audio Volume Bar */}
             <div className="absolute bottom-4 left-4 right-4 bg-black/70 backdrop-blur-md rounded-2xl p-3 flex items-center gap-3 border border-white/10">
