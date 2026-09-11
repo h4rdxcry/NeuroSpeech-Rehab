@@ -7,6 +7,8 @@
  * words using Continuous Dynamic Time Warping (DTW) alignment.
  */
 
+import { EMPIRICAL_VISEME_PRIORS, EMPIRICAL_TRANSITION_MATRIX } from './empiricalVisemePriors';
+
 export enum VisemeClass {
   BILABIAL = 0,        // /p, b, m/ -> Closed lips (aperture < 0.045)
   LABIODENTAL = 1,     // /f, v/ -> Lower lip tuck (aperture 0.045-0.085)
@@ -48,6 +50,8 @@ export interface FrameArticulatoryState {
   jawDisplacementX: number;
   viseme: VisemeClass;
   confidence: number;
+  apertureVelocity?: number;
+  widthVelocity?: number;
 }
 
 export interface VisualPredictionResult {
@@ -234,6 +238,11 @@ export class VisualLipReaderEngine {
   private maxAttemptLength = 180; // 6 seconds
   private isRecording = false;
 
+  private prevApertureRatio = 0.045;
+  private prevWidthRatio = 0.510;
+  private prevTimestamp = 0;
+  private prevViseme: VisemeClass = VisemeClass.NEUTRAL_REST;
+
   public startAttempt() {
     this.attemptBuffer = [];
     this.isRecording = true;
@@ -251,19 +260,32 @@ export class VisualLipReaderEngine {
   public processFrame(
     apertureRatio: number, 
     widthRatio: number, 
-    jawDisplacementX: number
+    jawDisplacementX: number,
+    apertureVel?: number,
+    widthVel?: number
   ): FrameArticulatoryState {
-    const classification = this.classifySingleFrame(apertureRatio, widthRatio);
+    const now = performance.now();
+    const dt = Math.max(0.016, (now - (this.prevTimestamp || now)) / 1000);
+    const apVel = apertureVel !== undefined ? apertureVel : ((apertureRatio - this.prevApertureRatio) / dt);
+    const wVel = widthVel !== undefined ? widthVel : ((widthRatio - this.prevWidthRatio) / dt);
+    this.prevApertureRatio = apertureRatio;
+    this.prevWidthRatio = widthRatio;
+    this.prevTimestamp = now;
+
+    const classification = this.classifySingleFrame(apertureRatio, widthRatio, apVel, wVel, this.prevViseme);
+    this.prevViseme = classification.viseme;
     const mm = Math.round(apertureRatio * 120);
 
     const state: FrameArticulatoryState = {
-      timestamp: performance.now(),
+      timestamp: now,
       apertureRatio,
       widthRatio,
       mouthOpeningMm: mm,
       jawDisplacementX,
       viseme: classification.viseme,
-      confidence: classification.confidence
+      confidence: classification.confidence,
+      apertureVelocity: Math.round(apVel * 1000) / 1000,
+      widthVelocity: Math.round(wVel * 1000) / 1000
     };
 
     // 1. Always maintain continuous rolling window
@@ -284,47 +306,88 @@ export class VisualLipReaderEngine {
   }
 
   /**
-   * Classifies a single physical frame into one of 8 Viseme classes based on geometry.
+   * Classifies a single physical frame into one of 8 Viseme classes
+   * using empirical benchmark distributions (MIRACL-VC1 / GRID / LRW) and dynamic velocity.
    */
-  public classifySingleFrame(apertureRatio: number, widthRatio: number): {
+  public classifySingleFrame(
+    apertureRatio: number, 
+    widthRatio: number,
+    apertureVel: number = 0,
+    widthVel: number = 0,
+    prevViseme?: VisemeClass
+  ): {
     viseme: VisemeClass;
     confidence: number;
   } {
-    // 1. Bilabial Closure: Lips pressed together or sealed
-    if (apertureRatio < 0.050) {
-      const conf = Math.min(0.99, 0.82 + (0.050 - apertureRatio) * 5);
-      return { viseme: VisemeClass.BILABIAL, confidence: Math.round(conf * 100) / 100 };
+    // 1. Evaluate empirical multivariate Gaussian log-likelihood from benchmark dataset
+    const xVec = [apertureRatio, widthRatio, apertureVel, widthVel];
+    let bestViseme: VisemeClass = VisemeClass.NEUTRAL_REST;
+    let minMahalanobis = Infinity;
+    const scores: number[] = new Array(8).fill(0);
+
+    for (let vId = 0; vId < 8; vId++) {
+      const prior = EMPIRICAL_VISEME_PRIORS[String(vId)];
+      if (!prior) continue;
+
+      const mu = prior.gaussian_4d.mean;
+      const invCov = prior.gaussian_4d.inv_cov;
+
+      const diff = [
+        xVec[0] - mu[0],
+        xVec[1] - mu[1],
+        (xVec[2] - mu[2]) * 0.35, // velocity variance scaling
+        (xVec[3] - mu[3]) * 0.35
+      ];
+
+      let dSq = 0;
+      for (let r = 0; r < 4; r++) {
+        let rowSum = 0;
+        for (let c = 0; c < 4; c++) {
+          rowSum += diff[c] * (invCov[r]?.[c] || 0);
+        }
+        dSq += diff[r] * rowSum;
+      }
+
+      // Transition probability prior
+      let transitionBonus = 0;
+      if (prevViseme !== undefined && EMPIRICAL_TRANSITION_MATRIX[prevViseme]) {
+        const transProb = EMPIRICAL_TRANSITION_MATRIX[prevViseme][vId] || 0.05;
+        transitionBonus = Math.log(Math.max(transProb, 1e-4)) * 0.45;
+      }
+
+      const score = -0.5 * dSq + transitionBonus;
+      scores[vId] = score;
+
+      if (dSq < minMahalanobis) {
+        minMahalanobis = dSq;
+        bestViseme = vId as VisemeClass;
+      }
     }
 
-    // 2. Open Vowel: Wide vertical mouth opening
-    if (apertureRatio > 0.14) {
-      const conf = Math.min(0.99, 0.80 + (apertureRatio - 0.14) * 2);
-      return { viseme: VisemeClass.OPEN_VOWEL, confidence: Math.round(conf * 100) / 100 };
+    // Softmax probabilities
+    const maxS = Math.max(...scores);
+    const expScores = scores.map(s => Math.exp(Math.max(-40, s - maxS)));
+    const sumExp = expScores.reduce((a, b) => a + b, 0);
+    const bestProb = expScores[bestViseme] / (sumExp || 1.0);
+
+    // Anatomical hard limits for clear disambiguation
+    if (apertureRatio < 0.038) {
+      return { viseme: VisemeClass.BILABIAL, confidence: 0.96 };
+    }
+    if (apertureRatio > 0.25) {
+      return { viseme: VisemeClass.OPEN_VOWEL, confidence: 0.95 };
+    }
+    if (widthRatio > 1.12 && apertureRatio < 0.20) {
+      return { viseme: VisemeClass.SPREAD_VOWEL, confidence: 0.94 };
+    }
+    if (widthRatio < 0.76 && apertureRatio > 0.08) {
+      return { viseme: VisemeClass.ROUNDED_VOWEL, confidence: 0.92 };
     }
 
-    // 3. Rounded Vowel: Pursing or rounding lips (width narrow, opening moderate)
-    if (widthRatio < 0.90 && apertureRatio > 0.045) {
-      const conf = Math.min(0.98, 0.78 + (0.90 - widthRatio) * 2);
-      return { viseme: VisemeClass.ROUNDED_VOWEL, confidence: Math.round(conf * 100) / 100 };
-    }
-
-    // 4. Spread Vowel: Wide mouth stretch or smiling vowel posture
-    if (widthRatio > 0.99) {
-      const conf = Math.min(0.98, 0.78 + (widthRatio - 0.99) * 2);
-      return { viseme: VisemeClass.SPREAD_VOWEL, confidence: Math.round(conf * 100) / 100 };
-    }
-
-    // 5. Labiodental: Slight opening with lower lip contact
-    if (apertureRatio < 0.085 && widthRatio >= 0.86 && widthRatio <= 0.99) {
-      return { viseme: VisemeClass.LABIODENTAL, confidence: 0.84 };
-    }
-
-    // 6. Dental / Alveolar / Neutral slit
-    if (apertureRatio < 0.14) {
-      return { viseme: VisemeClass.DENTAL_ALVEOLAR, confidence: 0.82 };
-    }
-
-    return { viseme: VisemeClass.VELAR_PALATAL, confidence: 0.78 };
+    return { 
+      viseme: bestViseme, 
+      confidence: Math.round(Math.min(0.99, Math.max(0.68, bestProb)) * 100) / 100 
+    };
   }
 
   /**

@@ -66,24 +66,42 @@ def generate_synthetic_mouth_patch(aperture: float, width: float, pucker: float 
 
 
 def create_visual_speech_samples(num_samples: int = 600, seq_len: int = 16) -> List[Dict[str, Any]]:
-    """Creates diverse visual speech trials covering all 8 viseme classes."""
+    """Creates diverse visual speech trials grounded in empirical benchmark distributions."""
     np.random.seed(42)
     samples: List[Dict[str, Any]] = []
 
+    # Attempt to load empirical benchmark priors
+    priors_file = WORKSPACE_ROOT / "ml" / "models" / "empirical_viseme_priors.json"
+    empirical_priors = None
+    if priors_file.exists():
+        try:
+            with open(priors_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                empirical_priors = data.get("empirical_priors")
+        except Exception:
+            empirical_priors = None
+
     viseme_specs = [
-        (VisemeClass.BILABIAL, 0.02, 0.50, 0.0),       # /p, b, m/ tight lips
-        (VisemeClass.LABIODENTAL, 0.06, 0.48, 0.0),    # /f, v/ lower lip under teeth
-        (VisemeClass.DENTAL_ALVEOLAR, 0.15, 0.52, 0.0),# /t, d, s, z/ partial opening
-        (VisemeClass.VELAR_PALATAL, 0.22, 0.50, 0.0),  # /k, g/ mid opening
-        (VisemeClass.OPEN_VOWEL, 0.45, 0.52, 0.0),     # /a, aa/ wide open
-        (VisemeClass.SPREAD_VOWEL, 0.12, 0.68, 0.0),   # /i, e/ wide lateral spread
-        (VisemeClass.ROUNDED_VOWEL, 0.18, 0.32, 0.6),  # /u, o/ puckered constriction
-        (VisemeClass.NEUTRAL_REST, 0.05, 0.50, 0.0),   # silence / rest
+        (VisemeClass.BILABIAL, 0.024, 0.512, 0.0),       # /p, b, m/ tight lips
+        (VisemeClass.LABIODENTAL, 0.068, 0.535, 0.0),    # /f, v/ lower lip under teeth
+        (VisemeClass.DENTAL_ALVEOLAR, 0.118, 0.540, 0.0),# /t, d, s, z/ partial opening
+        (VisemeClass.VELAR_PALATAL, 0.158, 0.528, 0.0),  # /k, g/ mid opening
+        (VisemeClass.OPEN_VOWEL, 0.285, 0.565, 0.0),     # /a, aa/ wide open
+        (VisemeClass.SPREAD_VOWEL, 0.125, 0.645, 0.0),   # /i, e/ wide lateral spread
+        (VisemeClass.ROUNDED_VOWEL, 0.142, 0.405, 0.6),  # /u, o/ puckered constriction
+        (VisemeClass.NEUTRAL_REST, 0.045, 0.505, 0.0),   # silence / rest
     ]
 
     for i in range(num_samples):
         # Pick dominant target viseme for this trial
-        target_v, target_ap, target_w, target_puck = viseme_specs[i % len(viseme_specs)]
+        target_v, base_ap, base_w, target_puck = viseme_specs[i % len(viseme_specs)]
+        
+        target_ap = base_ap
+        target_w = base_w
+        if empirical_priors and str(target_v) in empirical_priors:
+            p = empirical_priors[str(target_v)]
+            target_ap = float(np.random.normal(p["aperture"]["mean"], p["aperture"]["std"] * 0.5))
+            target_w = float(np.random.normal(p["width"]["mean"], p["width"]["std"] * 0.5))
 
         kin_frames: List[List[float]] = []
         pix_frames: List[np.ndarray] = []
@@ -92,19 +110,21 @@ def create_visual_speech_samples(num_samples: int = 600, seq_len: int = 16) -> L
         for t in range(seq_len):
             # Smooth trajectory arc approaching peak at mid-sequence
             phase = np.sin(np.pi * (t / (seq_len - 1)))
-            cur_ap = 0.05 + (target_ap - 0.05) * phase + np.random.normal(0, 0.01)
-            cur_w = 0.50 + (target_w - 0.50) * phase + np.random.normal(0, 0.01)
+            cur_ap = 0.045 + (target_ap - 0.045) * phase + np.random.normal(0, 0.008)
+            cur_w = 0.505 + (target_w - 0.505) * phase + np.random.normal(0, 0.012)
             cur_puck = target_puck * phase
 
-            cur_v = target_v if phase > 0.4 else VisemeClass.NEUTRAL_REST
+            cur_v = target_v if phase > 0.35 else VisemeClass.NEUTRAL_REST
 
             # 40-dim kinematics vector
             kin_vec = [0.0] * 40
-            kin_vec[0] = float(cur_ap)
-            kin_vec[1] = float(cur_w)
-            kin_vec[2] = float(cur_ap / max(cur_w, 1e-3))
+            kin_vec[0] = float(max(0.005, cur_ap))
+            kin_vec[1] = float(max(0.30, cur_w))
+            kin_vec[2] = float(kin_vec[0] / max(kin_vec[1], 1e-3))
+            kin_vec[14] = float(0.60 + 0.18 * phase)  # Jaw depression
             kin_vec[20] = float(1.0 - abs(np.random.normal(0, 0.02)))  # Symmetry
-            kin_vec[3:20] = np.random.normal(0.1, 0.02, 17).tolist()
+            kin_vec[3:14] = np.random.normal(0.1, 0.02, 11).tolist()
+            kin_vec[15:20] = np.random.normal(0.08, 0.02, 5).tolist()
             kin_vec[21:40] = np.random.normal(0.05, 0.01, 19).tolist()
 
             # Render matching (1, 48, 48) mouth patch

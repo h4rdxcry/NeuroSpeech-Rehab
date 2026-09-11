@@ -198,6 +198,59 @@ class KinematicsEngine:
             "jerk": jerk,
         }
 
+    @classmethod
+    def compute_frame_dynamics(cls, recent_frames: List[List[float]], fps: float = 30.0) -> Dict[str, float]:
+        """Extracts dynamic temporal derivative biomarkers from a rolling window of 40-D kinematic frames.
+        
+        Args:
+            recent_frames: List of 40-D kinematic feature lists (at least 2 frames recommended).
+            fps: Video capture frames per second (default 30.0).
+        Returns:
+            Dictionary with instantaneous aperture velocity, width velocity, accelerations, and jaw speed.
+        """
+        if not recent_frames or len(recent_frames) == 0:
+            return {
+                "aperture_vel": 0.0,
+                "width_vel": 0.0,
+                "aperture_accel": 0.0,
+                "width_accel": 0.0,
+                "jaw_speed": 0.0,
+            }
+
+        dt = 1.0 / max(fps, 1.0)
+        curr = recent_frames[-1]
+
+        if len(recent_frames) == 1:
+            return {
+                "aperture_vel": 0.0,
+                "width_vel": 0.0,
+                "aperture_accel": 0.0,
+                "width_accel": 0.0,
+                "jaw_speed": 0.0,
+            }
+
+        prev = recent_frames[-2]
+        ap_vel = (curr[0] - prev[0]) / dt
+        w_vel = (curr[1] - prev[1]) / dt
+        jaw_disp = (curr[14] - prev[14]) / dt
+
+        ap_accel = 0.0
+        w_accel = 0.0
+        if len(recent_frames) >= 3:
+            prev2 = recent_frames[-3]
+            prev_ap_vel = (prev[0] - prev2[0]) / dt
+            prev_w_vel = (prev[1] - prev2[1]) / dt
+            ap_accel = (ap_vel - prev_ap_vel) / dt
+            w_accel = (w_vel - prev_w_vel) / dt
+
+        return {
+            "aperture_vel": float(np.clip(ap_vel, -3.0, 3.0)),
+            "width_vel": float(np.clip(w_vel, -3.0, 3.0)),
+            "aperture_accel": float(np.clip(ap_accel, -20.0, 20.0)),
+            "width_accel": float(np.clip(w_accel, -20.0, 20.0)),
+            "jaw_speed": float(abs(jaw_disp)),
+        }
+
     @staticmethod
     def compute_movement_smoothness(jerk: np.ndarray, velocity: np.ndarray) -> float:
         """Computes dimensionless motor smoothness index (Log Dimensionless Jerk).

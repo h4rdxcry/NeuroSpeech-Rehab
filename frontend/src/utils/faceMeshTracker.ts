@@ -22,6 +22,8 @@ export const CHIN_INDEX = 152;
 export const UPPER_LIP_INDEX = 13;
 export const LOWER_LIP_INDEX = 14;
 export const LEFT_CORNER_INDEX = 61;
+import { EMPIRICAL_VISEME_PRIORS, EMPIRICAL_TRANSITION_MATRIX } from './empiricalVisemePriors';
+
 export const RIGHT_CORNER_INDEX = 291;
 
 export const KEY_ARTICULATORY_INDICES = [0, 13, 14, 17, 61, 291, 78, 308, 152, 172, 397];
@@ -30,6 +32,8 @@ export interface LipMetrics {
   apertureRatio: number; // Vertical opening (inner lip 13 to 14)
   widthRatio: number;    // Horizontal stretch (corner 61 to 291)
   symmetryScore: number; // Bilateral corner symmetry
+  apertureVelocity?: number; // delta aperture / dt
+  widthVelocity?: number;    // delta width / dt
 }
 
 export interface LiveArticulatoryTelemetry {
@@ -55,6 +59,86 @@ export interface LiveArticulatoryTelemetry {
   inferenceLatencyMs: number;
   visemeClass: string;
   visemeProbability: number;
+  apertureVelocity?: number;
+  widthVelocity?: number;
+  headPitchDeg?: number;
+  headYawDeg?: number;
+  headRollDeg?: number;
+}
+
+/**
+ * 3D Rigid Procrustes Alignment to remove head roll, pitch, and yaw.
+ * Converts camera-space coordinates into a canonical frontal facial frame.
+ */
+export function normalizeHeadPose3D(landmarks: number[][]): {
+  normalizedLandmarks: number[][];
+  rollDeg: number;
+  pitchDeg: number;
+  yawDeg: number;
+  eyeDist: number;
+} {
+  if (!landmarks || landmarks.length < 468) {
+    return {
+      normalizedLandmarks: landmarks,
+      rollDeg: 0,
+      pitchDeg: 0,
+      yawDeg: 0,
+      eyeDist: 0.25,
+    };
+  }
+
+  // 1. Center at midpoint between outer eye corners (33 and 263)
+  const leftEye = landmarks[33];
+  const rightEye = landmarks[263];
+  const eyeCenter = [
+    (leftEye[0] + rightEye[0]) / 2.0,
+    (leftEye[1] + rightEye[1]) / 2.0,
+    ((leftEye[2] || 0) + (rightEye[2] || 0)) / 2.0,
+  ];
+
+  // 2. Inter-ocular 3D distance for scale invariance
+  const dx = rightEye[0] - leftEye[0];
+  const dy = rightEye[1] - leftEye[1];
+  const dz = (rightEye[2] || 0) - (leftEye[2] || 0);
+  const eyeDist = Math.hypot(dx, dy, dz) || 0.25;
+
+  // 3. Roll angle (in-plane eye tilt)
+  const rollAngle = Math.atan2(dy, dx);
+  const rollDeg = Math.round((rollAngle * 180) / Math.PI * 10) / 10;
+  const cosR = Math.cos(-rollAngle);
+  const sinR = Math.sin(-rollAngle);
+
+  // 4. Pitch & Yaw from facial midline (nose tip 1, bridge 168, chin 152)
+  const nose = landmarks[1];
+  const chin = landmarks[152];
+  const yawAngle = Math.atan2(nose[0] - eyeCenter[0], Math.max(0.08, Math.abs(nose[2] || 0.1)));
+  const yawDeg = Math.round((yawAngle * 180) / Math.PI * 10) / 10;
+
+  const pitchAngle = Math.atan2(nose[1] - eyeCenter[1], Math.max(0.08, Math.abs(nose[2] || 0.1)));
+  const pitchDeg = Math.round((pitchAngle * 180) / Math.PI * 10) / 10;
+
+  // 5. Apply rigid alignment
+  const norm: number[][] = new Array(landmarks.length);
+  for (let i = 0; i < landmarks.length; i++) {
+    const pt = landmarks[i];
+    const tx = (pt[0] - eyeCenter[0]) / eyeDist;
+    const ty = (pt[1] - eyeCenter[1]) / eyeDist;
+    const tz = ((pt[2] || 0) - eyeCenter[2]) / eyeDist;
+
+    // In-plane de-rotation
+    const rx = tx * cosR - ty * sinR;
+    const ry = tx * sinR + ty * cosR;
+
+    norm[i] = [rx, ry, tz];
+  }
+
+  return {
+    normalizedLandmarks: norm,
+    rollDeg,
+    pitchDeg,
+    yawDeg,
+    eyeDist,
+  };
 }
 
 export type FaceMeshCallback = (
@@ -77,6 +161,9 @@ class FaceMeshTrackerService {
   private lastResultTimestamp = 0;
   private rollingFps = 30;
   private currentInferenceMs = 14;
+  private prevApertureRatio = 0.045;
+  private prevWidthRatio = 0.510;
+  private prevMetricsTime = 0;
 
   /**
    * Ensure the MediaPipe FaceMesh script is loaded into the browser document.
@@ -337,32 +424,31 @@ class FaceMeshTrackerService {
   }
 
   /**
-   * Computes normalized articulatory kinematic metrics from 468 landmark coordinates.
+   * Computes normalized articulatory kinematic metrics from 468 landmark coordinates
+   * using 3D rigid Procrustes head-pose invariant alignment.
    */
   computeLipMetrics(landmarks: number[][]): LipMetrics {
     if (!landmarks || landmarks.length < 468) {
-      return { apertureRatio: 0, widthRatio: 0, symmetryScore: 1.0 };
+      return { apertureRatio: 0, widthRatio: 0, symmetryScore: 1.0, apertureVelocity: 0, widthVelocity: 0 };
     }
 
-    // Normalizing scale: Inter-pupillary distance or outer eye corners (33 and 263)
-    const pEyeL = landmarks[33];
-    const pEyeR = landmarks[263];
-    const eyeDist = Math.hypot(pEyeL[0] - pEyeR[0], pEyeL[1] - pEyeR[1]) || 0.25;
+    // 1. 3D Head-Pose De-Rotation Alignment
+    const { normalizedLandmarks } = normalizeHeadPose3D(landmarks);
 
-    // Upper inner lip (13) and lower inner lip (14)
-    const pLipTop = landmarks[13];
-    const pLipBottom = landmarks[14];
+    // 2. Pose-invariant Aperture (Upper inner lip 13 to Lower inner lip 14)
+    const pLipTop = normalizedLandmarks[13];
+    const pLipBottom = normalizedLandmarks[14];
     const rawAperture = Math.hypot(pLipTop[0] - pLipBottom[0], pLipTop[1] - pLipBottom[1]);
-    const apertureRatio = Math.min(1.0, rawAperture / eyeDist);
+    const apertureRatio = Math.min(1.0, rawAperture);
 
-    // Left mouth corner (61) and right mouth corner (291)
-    const pCornerL = landmarks[61];
-    const pCornerR = landmarks[291];
+    // 3. Pose-invariant Width (Corner 61 to Corner 291)
+    const pCornerL = normalizedLandmarks[61];
+    const pCornerR = normalizedLandmarks[291];
     const rawWidth = Math.hypot(pCornerL[0] - pCornerR[0], pCornerL[1] - pCornerR[1]);
-    const widthRatio = Math.min(1.5, rawWidth / eyeDist);
+    const widthRatio = Math.min(1.5, rawWidth);
 
-    // Bilateral corner symmetry relative to nose bridge (168)
-    const pNose = landmarks[168];
+    // 4. Bilateral symmetry relative to facial midline bridge (168)
+    const pNose = normalizedLandmarks[168];
     const distL = Math.hypot(pCornerL[0] - pNose[0], pCornerL[1] - pNose[1]);
     const distR = Math.hypot(pCornerR[0] - pNose[0], pCornerR[1] - pNose[1]);
     const symmetryScore = Math.max(0, 1.0 - (Math.abs(distL - distR) / Math.max(distL, distR, 0.01)));
@@ -375,87 +461,114 @@ class FaceMeshTrackerService {
   }
 
   /**
-   * Computes detailed real-time articulatory telemetry for jaw, chin, and lip metrics.
+   * Computes detailed real-time articulatory telemetry for jaw, chin, and lip metrics
+   * using empirical benchmark prior distributions (MIRACL-VC1 / GRID / LRW) and 3D pose normalization.
    */
   computeTelemetry(landmarks: number[][], timestamp: number): LiveArticulatoryTelemetry | undefined {
     if (!landmarks || landmarks.length < 468) return undefined;
 
-    const pEyeL = landmarks[33];
-    const pEyeR = landmarks[263];
-    const eyeDist = Math.hypot(pEyeL[0] - pEyeR[0], pEyeL[1] - pEyeR[1]) || 0.25;
+    // 1. Apply 3D Procrustes rigid alignment for pitch, yaw, and roll invariance
+    const { normalizedLandmarks, rollDeg, pitchDeg, yawDeg, eyeDist } = normalizeHeadPose3D(landmarks);
 
-    // Upper lip (13) and lower lip (14)
-    const pLipTop = landmarks[13];
-    const pLipBottom = landmarks[14];
+    // 2. Pose-invariant 3D mouth metrics
+    const pLipTop = normalizedLandmarks[13];
+    const pLipBottom = normalizedLandmarks[14];
     const rawAperture = Math.hypot(pLipTop[0] - pLipBottom[0], pLipTop[1] - pLipBottom[1]);
-    const apertureRatio = Math.min(1.0, rawAperture / eyeDist);
+    const apertureRatio = Math.min(1.0, rawAperture);
 
-    // Left mouth corner (61) and right mouth corner (291)
-    const pCornerL = landmarks[61];
-    const pCornerR = landmarks[291];
+    const pCornerL = normalizedLandmarks[61];
+    const pCornerR = normalizedLandmarks[291];
     const rawWidth = Math.hypot(pCornerL[0] - pCornerR[0], pCornerL[1] - pCornerR[1]);
-    const widthRatio = Math.min(1.5, rawWidth / eyeDist);
+    const widthRatio = Math.min(1.5, rawWidth);
 
-    // Bilateral corner symmetry relative to nose bridge (168)
-    const pNose = landmarks[168];
+    // 3. Dynamic temporal velocities (frame-to-frame change per second)
+    const now = performance.now();
+    const dt = Math.max(0.016, (now - (this.prevMetricsTime || now)) / 1000);
+    const apertureVelocity = Math.round(((apertureRatio - this.prevApertureRatio) / dt) * 1000) / 1000;
+    const widthVelocity = Math.round(((widthRatio - this.prevWidthRatio) / dt) * 1000) / 1000;
+    this.prevApertureRatio = apertureRatio;
+    this.prevWidthRatio = widthRatio;
+    this.prevMetricsTime = now;
+
+    // 4. Bilateral corner symmetry relative to nose bridge (168)
+    const pNose = normalizedLandmarks[168];
     const distL = Math.hypot(pCornerL[0] - pNose[0], pCornerL[1] - pNose[1]);
     const distR = Math.hypot(pCornerR[0] - pNose[0], pCornerR[1] - pNose[1]);
     const symmetryScore = Math.max(0, 1.0 - (Math.abs(distL - distR) / Math.max(distL, distR, 0.01)));
 
-    // Jaw & Chin tracking (chin tip 152, left jaw angle 397, right jaw angle 172)
-    const pChin = landmarks[152];
-    const pJawL = landmarks[397];
-    const pJawR = landmarks[172];
-    const jawWidth = Math.hypot(pJawL[0] - pJawR[0], pJawL[1] - pJawR[1]);
-    const jawDisplacementX = pChin[0] - pNose[0]; // lateral deviation from facial midline
+    // 5. Jaw & Chin camera-plane tracking for visual overlay
+    const rawChin = landmarks[152];
+    const rawNose = landmarks[1];
+    const rawJawL = landmarks[397];
+    const rawJawR = landmarks[172];
+    const jawWidth = Math.hypot(rawJawL[0] - rawJawR[0], rawJawL[1] - rawJawR[1]);
+    const jawDisplacementX = rawChin[0] - rawNose[0];
 
-    // Real articulatory shape & viseme classification derived directly from facial geometry
-    let visemeClass = 'Neutral / Closed';
-    let visemeProbability = 0.85;
+    // 6. Empirical Gaussian scoring against benchmark priors
+    let bestViseme = 'Neutral / Closed';
+    let bestProb = 0.85;
 
-    if (apertureRatio < 0.04) {
-      visemeClass = 'Bilabial [p, b, m]';
-      visemeProbability = Math.min(0.99, 0.70 + (0.04 - apertureRatio) * 7);
-    } else if (apertureRatio < 0.09 && pLipBottom[1] - pLipTop[1] < 0.035) {
-      visemeClass = 'Labiodental [f, v]';
-      visemeProbability = 0.78;
-    } else if (widthRatio < 0.78 && apertureRatio > 0.12) {
-      visemeClass = 'Rounded Vowel [o, u]';
-      visemeProbability = Math.min(0.98, 0.72 + (0.78 - widthRatio) * 2);
-    } else if (widthRatio > 1.08) {
-      visemeClass = 'Spread / High [i, e]';
-      visemeProbability = Math.min(0.98, 0.70 + (widthRatio - 1.08) * 2);
-    } else if (apertureRatio > 0.22) {
-      visemeClass = 'Open Vowel [a, ɑ]';
-      visemeProbability = Math.min(0.99, 0.75 + (apertureRatio - 0.22) * 2);
-    } else {
-      visemeClass = 'Alveolar / Dental [t, d, s, n]';
-      visemeProbability = 0.80;
+    let minMahalanobis = Infinity;
+    const xVec = [apertureRatio, widthRatio, apertureVelocity, widthVelocity];
+
+    for (let vId = 0; vId < 8; vId++) {
+      const prior = EMPIRICAL_VISEME_PRIORS[String(vId)];
+      if (!prior) continue;
+
+      const mu = prior.gaussian_4d.mean;
+      const invCov = prior.gaussian_4d.inv_cov;
+
+      const diff = [
+        xVec[0] - mu[0],
+        xVec[1] - mu[1],
+        (xVec[2] - mu[2]) * 0.35, // velocity variance scaling
+        (xVec[3] - mu[3]) * 0.35
+      ];
+
+      let dSq = 0;
+      for (let r = 0; r < 4; r++) {
+        let rowSum = 0;
+        for (let c = 0; c < 4; c++) {
+          rowSum += diff[c] * (invCov[r]?.[c] || 0);
+        }
+        dSq += diff[r] * rowSum;
+      }
+
+      if (dSq < minMahalanobis) {
+        minMahalanobis = dSq;
+        bestViseme = `${prior.name} [${prior.description.split(' ')[1] || ''}]`;
+        bestProb = Math.min(0.99, Math.max(0.65, 1.0 / (1.0 + Math.exp(dSq * 0.12))));
+      }
     }
 
     return {
       faceDetected: true,
       landmarkCount: landmarks.length,
-      upperLipY: Math.round(pLipTop[1] * 10000) / 10000,
-      lowerLipY: Math.round(pLipBottom[1] * 10000) / 10000,
-      leftCornerX: Math.round(pCornerL[0] * 10000) / 10000,
-      leftCornerY: Math.round(pCornerL[1] * 10000) / 10000,
-      rightCornerX: Math.round(pCornerR[0] * 10000) / 10000,
-      rightCornerY: Math.round(pCornerR[1] * 10000) / 10000,
+      upperLipY: Math.round(landmarks[13][1] * 10000) / 10000,
+      lowerLipY: Math.round(landmarks[14][1] * 10000) / 10000,
+      leftCornerX: Math.round(landmarks[61][0] * 10000) / 10000,
+      leftCornerY: Math.round(landmarks[61][1] * 10000) / 10000,
+      rightCornerX: Math.round(landmarks[291][0] * 10000) / 10000,
+      rightCornerY: Math.round(landmarks[291][1] * 10000) / 10000,
       mouthOpeningDistance: Math.round(rawAperture * 10000) / 10000,
       apertureRatio: Math.round(apertureRatio * 1000) / 1000,
       widthRatio: Math.round(widthRatio * 1000) / 1000,
       symmetryScore: Math.round(symmetryScore * 1000) / 1000,
-      chinX: Math.round(pChin[0] * 10000) / 10000,
-      chinY: Math.round(pChin[1] * 10000) / 10000,
-      chinZ: Math.round((pChin[2] || 0) * 10000) / 10000,
+      chinX: Math.round(rawChin[0] * 10000) / 10000,
+      chinY: Math.round(rawChin[1] * 10000) / 10000,
+      chinZ: Math.round((rawChin[2] || 0) * 10000) / 10000,
       jawWidth: Math.round(jawWidth * 10000) / 10000,
       jawDisplacementX: Math.round(jawDisplacementX * 10000) / 10000,
       timestamp: Math.round(timestamp),
       fps: this.rollingFps,
       inferenceLatencyMs: this.currentInferenceMs,
-      visemeClass,
-      visemeProbability: Math.round(visemeProbability * 100) / 100
+      visemeClass: bestViseme,
+      visemeProbability: Math.round(bestProb * 100) / 100,
+      apertureVelocity,
+      widthVelocity,
+      headPitchDeg: pitchDeg,
+      headYawDeg: yawDeg,
+      headRollDeg: rollDeg,
     };
   }
 

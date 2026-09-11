@@ -310,17 +310,118 @@ class TemporalVisemeClassifier(nn.Module):
 
         return frame_logits, seq_embedding
 
-    @staticmethod
-    def classify_frame_heuristic(feature_40d: List[float]) -> int:
-        """Robust zero-shot heuristic classifier for single 40-dim kinematic frames."""
+    _priors_cache: Optional[Dict[str, Any]] = None
+
+    @classmethod
+    def get_empirical_priors(cls) -> Optional[Dict[str, Any]]:
+        """Loads and caches empirical viseme kinematic distributions extracted from open-source benchmarks."""
+        if cls._priors_cache is not None:
+            return cls._priors_cache
+        try:
+            from pathlib import Path
+            import json
+            priors_path = Path(__file__).resolve().parent / "empirical_viseme_priors.json"
+            if priors_path.exists():
+                with open(priors_path, "r", encoding="utf-8") as f:
+                    cls._priors_cache = json.load(f)
+                return cls._priors_cache
+        except Exception:
+            pass
+        return None
+
+    @classmethod
+    def classify_frame_empirical(
+        cls, 
+        feature_40d: List[float], 
+        ap_vel: float = 0.0, 
+        w_vel: float = 0.0, 
+        prev_viseme: Optional[int] = None
+    ) -> Tuple[int, float, Dict[int, float]]:
+        """Classifies a 40-D kinematic frame using empirical multivariate Gaussian log-likelihoods.
+        
+        Args:
+            feature_40d: 40-D kinematic vector.
+            ap_vel: Aperture velocity (delta aperture / delta t).
+            w_vel: Mouth width velocity (delta width / delta t).
+            prev_viseme: Optional previous viseme class index for coarticulation transition priors.
+        Returns:
+            (best_viseme_class, confidence_0_to_1, posterior_probabilities_dict)
+        """
+        if len(feature_40d) < 40:
+            return VisemeClass.NEUTRAL_REST, 0.5, {v: 0.125 for v in range(8)}
+
+        priors_bundle = cls.get_empirical_priors()
+        if not priors_bundle or "empirical_priors" not in priors_bundle:
+            fallback = cls.classify_frame_heuristic(feature_40d)
+            return fallback, 0.80, {fallback: 0.80}
+
+        empirical = priors_bundle["empirical_priors"]
+        trans_matrix = priors_bundle.get("transition_matrix")
+
+        aperture = feature_40d[0]
+        width = feature_40d[1]
+        x = np.array([aperture, width, ap_vel, w_vel], dtype=np.float64)
+
+        log_scores = np.zeros(8, dtype=np.float64)
+
+        for v_idx in range(8):
+            v_key = str(v_idx)
+            if v_key not in empirical:
+                continue
+
+            v_prior = empirical[v_key]
+            g4d = v_prior["gaussian_4d"]
+            mean_vec = np.array(g4d["mean"], dtype=np.float64)
+            inv_cov = np.array(g4d["inv_cov"], dtype=np.float64)
+            cov_diag = np.array(g4d["cov_diag"], dtype=np.float64)
+
+            # Mahalanobis distance squared: (x - mu)^T * inv_cov * (x - mu)
+            diff = x - mean_vec
+            # Weight velocity slightly less if velocities are zero (e.g. single frame evaluation)
+            if ap_vel == 0.0 and w_vel == 0.0:
+                diff[2] = 0.0
+                diff[3] = 0.0
+
+            mahalanobis_sq = float(np.dot(diff, np.dot(inv_cov, diff)))
+            log_det = float(np.sum(np.log(np.maximum(cov_diag, 1e-6))))
+
+            log_likelihood = -0.5 * (mahalanobis_sq + log_det)
+
+            # Add transition prior if prev_viseme provided
+            if prev_viseme is not None and trans_matrix and 0 <= prev_viseme < 8:
+                t_prob = trans_matrix[prev_viseme][v_idx]
+                log_likelihood += np.log(max(t_prob, 1e-4)) * 0.4
+
+            log_scores[v_idx] = log_likelihood
+
+        # Softmax over log scores with numerical stability
+        max_log = np.max(log_scores)
+        exp_scores = np.exp(np.clip(log_scores - max_log, -50.0, 0.0))
+        probabilities = exp_scores / np.sum(exp_scores)
+
+        best_viseme = int(np.argmax(probabilities))
+        confidence = float(probabilities[best_viseme])
+        prob_dict = {i: round(float(probabilities[i]), 4) for i in range(8)}
+
+        return best_viseme, round(confidence, 4), prob_dict
+
+    @classmethod
+    def classify_frame_heuristic(cls, feature_40d: List[float]) -> int:
+        """Robust classifier for single 40-dim kinematic frames, combining empirical Gaussian and geometry."""
         if len(feature_40d) < 40:
             return VisemeClass.NEUTRAL_REST
+
+        # Try empirical model first
+        try:
+            best_vis, conf, _ = cls.classify_frame_empirical(feature_40d)
+            if conf >= 0.50:
+                return best_vis
+        except Exception:
+            pass
 
         lip_aperture = feature_40d[0]
         mouth_width = feature_40d[1]
         aspect_ratio = feature_40d[2]
-        asymmetry = feature_40d[6]
-        lip_tilt = feature_40d[8]
         jaw_depression = feature_40d[14]
 
         # 1. Bilabial closure check

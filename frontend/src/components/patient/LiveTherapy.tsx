@@ -110,7 +110,13 @@ export const LiveTherapy: React.FC = () => {
       setLatestLandmarks(landmarks);
       if (tel) {
         setTelemetry(tel);
-        visualLipReader.processFrame(tel.apertureRatio, tel.widthRatio, tel.jawDisplacementX);
+        visualLipReader.processFrame(
+          tel.apertureRatio, 
+          tel.widthRatio, 
+          tel.jawDisplacementX,
+          tel.apertureVelocity,
+          tel.widthVelocity
+        );
         const vocabList = rehabLevels.map(l => l.targetText);
         const pred = visualLipReader.decodeCurrentBuffer(currentLevel.targetText, currentLevel.language, vocabList);
         setVisualPrediction(pred);
@@ -248,7 +254,28 @@ export const LiveTherapy: React.FC = () => {
 
           ctx.save();
 
-          // 1. Draw JAWLINE & CHIN CONTOUR in Cyan/Teal (#06B6D4)
+          // 1. Dynamic Vermilion Contour Fill (translucent fill between outer and inner vermilion borders)
+          ctx.beginPath();
+          outerLips.forEach((idx, i) => {
+            const pt = latestLandmarks[idx];
+            if (!pt) return;
+            if (i === 0) ctx.moveTo(pt[0] * w, pt[1] * h);
+            else ctx.lineTo(pt[0] * w, pt[1] * h);
+          });
+          ctx.closePath();
+          innerLips.forEach((idx, i) => {
+            const pt = latestLandmarks[idx];
+            if (!pt) return;
+            if (i === 0) ctx.moveTo(pt[0] * w, pt[1] * h);
+            else ctx.lineTo(pt[0] * w, pt[1] * h);
+          });
+          ctx.closePath();
+          ctx.fillStyle = attemptState === 'listening' 
+            ? 'rgba(16, 185, 129, 0.22)' 
+            : 'rgba(56, 189, 248, 0.18)';
+          ctx.fill('evenodd');
+
+          // 2. Draw JAWLINE & CHIN CONTOUR in Cyan/Teal (#06B6D4)
           ctx.beginPath();
           jawline.forEach((idx, i) => {
             const pt = latestLandmarks[idx];
@@ -264,9 +291,20 @@ export const LiveTherapy: React.FC = () => {
           ctx.shadowBlur = 6;
           ctx.stroke();
 
-          // 2. Prominent Chin Tip Landmark (index 152)
+          // 3. Dynamic Jaw Displacement Vector (Nose tip 1 to Chin tip 152)
+          const pNoseTip = latestLandmarks[1];
           const pChin = latestLandmarks[152];
-          if (pChin) {
+          if (pNoseTip && pChin) {
+            ctx.beginPath();
+            ctx.setLineDash([3, 4]);
+            ctx.moveTo(pNoseTip[0] * w, pNoseTip[1] * h);
+            ctx.lineTo(pChin[0] * w, pChin[1] * h);
+            ctx.strokeStyle = 'rgba(6, 182, 212, 0.75)';
+            ctx.lineWidth = 1.8;
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            // Chin tip target circle
             ctx.beginPath();
             ctx.arc(pChin[0] * w, pChin[1] * h, 5, 0, Math.PI * 2);
             ctx.fillStyle = '#06B6D4';
@@ -276,7 +314,7 @@ export const LiveTherapy: React.FC = () => {
             ctx.stroke();
           }
 
-          // 3. Draw Outer Lips with high-contrast neon styling
+          // 4. Outer Lips with high-contrast neon styling
           ctx.beginPath();
           outerLips.forEach((idx, i) => {
             const pt = latestLandmarks[idx];
@@ -293,7 +331,7 @@ export const LiveTherapy: React.FC = () => {
           ctx.shadowBlur = 8;
           ctx.stroke();
 
-          // 4. Draw Inner Lips
+          // 5. Inner Lips
           ctx.beginPath();
           innerLips.forEach((idx, i) => {
             const pt = latestLandmarks[idx];
@@ -309,14 +347,60 @@ export const LiveTherapy: React.FC = () => {
           ctx.shadowBlur = 0;
           ctx.stroke();
 
-          // 5. Key Articulatory Landmark Points
-          [0, 13, 14, 17, 61, 291, 78, 308].forEach(idx => {
+          // 6. Dynamic Inner Aperture Gauge Line (Upper 13 to Lower 14)
+          const p13 = latestLandmarks[13];
+          const p14 = latestLandmarks[14];
+          if (p13 && p14) {
+            const x13 = p13[0] * w;
+            const y13 = p13[1] * h;
+            const x14 = p14[0] * w;
+            const y14 = p14[1] * h;
+
+            ctx.beginPath();
+            ctx.moveTo(x13, y13);
+            ctx.lineTo(x14, y14);
+            ctx.strokeStyle = '#FBBF24'; // Amber gauge line
+            ctx.lineWidth = 2.2;
+            ctx.stroke();
+
+            // End gauge tick marks
+            const tickW = 5;
+            ctx.beginPath();
+            ctx.moveTo(x13 - tickW, y13);
+            ctx.lineTo(x13 + tickW, y13);
+            ctx.moveTo(x14 - tickW, y14);
+            ctx.lineTo(x14 + tickW, y14);
+            ctx.strokeStyle = '#FBBF24';
+            ctx.lineWidth = 2.0;
+            ctx.stroke();
+          }
+
+          // 7. Corner Excursion Pins (Left 61 & Right 291)
+          [61, 291].forEach(idx => {
             const pt = latestLandmarks[idx];
             if (!pt) return;
             const px = pt[0] * w;
             const py = pt[1] * h;
             ctx.beginPath();
-            ctx.arc(px, py, 3.5, 0, Math.PI * 2);
+            ctx.arc(px, py, 6, 0, Math.PI * 2);
+            ctx.strokeStyle = attemptState === 'listening' ? '#10B981' : '#38BDF8';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+
+            ctx.beginPath();
+            ctx.arc(px, py, 2.5, 0, Math.PI * 2);
+            ctx.fillStyle = '#FFFFFF';
+            ctx.fill();
+          });
+
+          // 8. Key Articulatory Landmark Points
+          [0, 13, 14, 17, 78, 308].forEach(idx => {
+            const pt = latestLandmarks[idx];
+            if (!pt) return;
+            const px = pt[0] * w;
+            const py = pt[1] * h;
+            ctx.beginPath();
+            ctx.arc(px, py, 3, 0, Math.PI * 2);
             ctx.fillStyle = '#FFFFFF';
             ctx.fill();
             ctx.strokeStyle = '#0284C7';
@@ -1216,7 +1300,13 @@ export const LiveTherapy: React.FC = () => {
                     setLatestLandmarks(landmarks);
                     if (tel) {
                       setTelemetry(tel);
-                      visualLipReader.processFrame(tel.apertureRatio, tel.widthRatio, tel.jawDisplacementX);
+                      visualLipReader.processFrame(
+                        tel.apertureRatio, 
+                        tel.widthRatio, 
+                        tel.jawDisplacementX,
+                        tel.apertureVelocity,
+                        tel.widthVelocity
+                      );
                       const vocabList = rehabLevels.map(l => l.targetText);
                       const pred = visualLipReader.decodeCurrentBuffer(currentLevel.targetText, currentLevel.language, vocabList);
                       setVisualPrediction(pred);
@@ -1268,6 +1358,45 @@ export const LiveTherapy: React.FC = () => {
                 )}
               </div>
             </div>
+
+            {/* Live Empirical Viseme & Articulatory Gauge HUD */}
+            {faceDetected && telemetry && (
+              <div className="absolute top-14 left-4 right-4 flex flex-wrap items-center justify-between gap-2 pointer-events-none z-10">
+                {/* Left: Recognized Viseme Pill */}
+                <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-950/80 backdrop-blur-md border border-cyan-500/30 shadow-lg shadow-cyan-950/40">
+                  <div className="w-2.5 h-2.5 rounded-full bg-cyan-400 animate-pulse" />
+                  <div className="flex flex-col">
+                    <span className="text-[9px] font-semibold uppercase tracking-wider text-cyan-400/80">Recognized Viseme</span>
+                    <span className="text-xs font-bold text-white tracking-wide">
+                      {telemetry.visemeClass}
+                    </span>
+                  </div>
+                  <span className="text-[11px] font-mono font-bold text-cyan-300 ml-1 px-1.5 py-0.5 rounded bg-cyan-500/20">
+                    {Math.round(telemetry.visemeProbability * 100)}%
+                  </span>
+                </div>
+
+                {/* Right: Aperture Opening & Head Pose Diagnostics */}
+                <div className="inline-flex items-center gap-2.5 px-3 py-1.5 rounded-xl bg-slate-950/80 backdrop-blur-md border border-white/10 text-[11px] font-mono text-slate-200">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-amber-400 font-bold">↕ {Math.round(telemetry.apertureRatio * 120)}mm</span>
+                    <span className="text-slate-400 text-[10px]">({Math.round(telemetry.apertureRatio * 100)}%)</span>
+                  </div>
+                  <span className="text-white/20">|</span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-blue-400 font-bold">↔ {Math.round(telemetry.widthRatio * 100)}%</span>
+                  </div>
+                  {telemetry.headRollDeg !== undefined && (
+                    <>
+                      <span className="text-white/20">|</span>
+                      <span className="text-emerald-400 text-[10px]" title="3D Invariant Alignment">
+                        3D ✓ (R:{telemetry.headRollDeg}°)
+                      </span>
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
 
             {/* Center: Face Guidance Positioning Cue - Only visible until face is detected */}
             {!faceDetected && (
