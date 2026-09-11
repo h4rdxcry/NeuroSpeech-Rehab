@@ -115,7 +115,7 @@ export function evaluateAttempt(
     if (similarity >= threshold) {
       return {
         speechDetected: true,
-        transcript: transcript || normTarget,
+        transcript: transcript || '',
         isMatch: true,
         matchScore: similarity,
         feedbackMessage: 'Speech detected clearly and exercise completed.',

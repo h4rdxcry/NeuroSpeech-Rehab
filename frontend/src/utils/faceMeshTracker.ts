@@ -14,7 +14,17 @@ export const INNER_LIPS_INDICES = [
   78, 191, 80, 81, 82, 13, 312, 311, 310, 415, 308, 324, 318, 402, 317, 14, 87, 178, 88, 95
 ];
 
-export const KEY_ARTICULATORY_INDICES = [0, 13, 14, 17, 61, 291, 78, 308];
+export const JAWLINE_INDICES = [
+  234, 93, 132, 58, 172, 136, 150, 149, 176, 148, 152, 377, 400, 378, 379, 365, 397, 288, 361, 323, 454
+];
+
+export const CHIN_INDEX = 152;
+export const UPPER_LIP_INDEX = 13;
+export const LOWER_LIP_INDEX = 14;
+export const LEFT_CORNER_INDEX = 61;
+export const RIGHT_CORNER_INDEX = 291;
+
+export const KEY_ARTICULATORY_INDICES = [0, 13, 14, 17, 61, 291, 78, 308, 152, 172, 397];
 
 export interface LipMetrics {
   apertureRatio: number; // Vertical opening (inner lip 13 to 14)
@@ -22,7 +32,36 @@ export interface LipMetrics {
   symmetryScore: number; // Bilateral corner symmetry
 }
 
-export type FaceMeshCallback = (landmarks: number[][], faceDetected: boolean, metrics?: LipMetrics) => void;
+export interface LiveArticulatoryTelemetry {
+  faceDetected: boolean;
+  landmarkCount: number;
+  upperLipY: number;
+  lowerLipY: number;
+  leftCornerX: number;
+  leftCornerY: number;
+  rightCornerX: number;
+  rightCornerY: number;
+  mouthOpeningDistance: number;
+  apertureRatio: number;
+  widthRatio: number;
+  symmetryScore: number;
+  chinX: number;
+  chinY: number;
+  chinZ: number;
+  jawWidth: number;
+  jawDisplacementX: number;
+  timestamp: number;
+  fps: number;
+  inferenceLatencyMs: number;
+  visemeClass: string;
+  visemeProbability: number;
+}
+
+export type FaceMeshCallback = (
+  landmarks: number[][], 
+  faceDetected: boolean, 
+  telemetry?: LiveArticulatoryTelemetry
+) => void;
 
 class FaceMeshTrackerService {
   private faceMeshInstance: any = null;
@@ -34,6 +73,10 @@ class FaceMeshTrackerService {
   private lastFrameTimestamp = 0;
   private targetFpsInterval = 1000 / 30; // 30 FPS target for optimal CPU & smooth rendering
   private activeCallback: FaceMeshCallback | null = null;
+  private lastSendTimestamp = 0;
+  private lastResultTimestamp = 0;
+  private rollingFps = 30;
+  private currentInferenceMs = 14;
 
   /**
    * Ensure the MediaPipe FaceMesh script is loaded into the browser document.
@@ -172,13 +215,26 @@ class FaceMeshTrackerService {
       instance.onResults((results: any) => {
         if (this.isStopped) return;
 
+        const now = performance.now();
+        if (this.lastResultTimestamp > 0) {
+          const delta = now - this.lastResultTimestamp;
+          if (delta > 0) {
+            this.rollingFps = Math.min(60, Math.max(1, Math.round(1000 / delta)));
+          }
+        }
+        this.lastResultTimestamp = now;
+
+        if (this.lastSendTimestamp > 0) {
+          this.currentInferenceMs = Math.round(now - this.lastSendTimestamp);
+        }
+
         if (results && results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
           const raw = results.multiFaceLandmarks[0];
           const landmarks: number[][] = raw.map((p: any) => [p.x, p.y, p.z || 0]);
-          const metrics = this.computeLipMetrics(landmarks);
+          const telemetry = this.computeTelemetry(landmarks, now);
 
           if (this.activeCallback) {
-            this.activeCallback(landmarks, true, metrics);
+            this.activeCallback(landmarks, true, telemetry);
           }
         } else {
           if (this.activeCallback) {
@@ -249,6 +305,7 @@ class FaceMeshTrackerService {
             this.isProcessing = true;
             this.lastFrameTimestamp = timestamp;
             try {
+              this.lastSendTimestamp = performance.now();
               await this.faceMeshInstance.send({ image: videoElement });
             } catch (e) {
               console.warn('[FaceMesh] Frame processing warning:', e);
@@ -315,6 +372,95 @@ class FaceMeshTrackerService {
       widthRatio: Math.round(widthRatio * 1000) / 1000,
       symmetryScore: Math.round(symmetryScore * 1000) / 1000,
     };
+  }
+
+  /**
+   * Computes detailed real-time articulatory telemetry for jaw, chin, and lip metrics.
+   */
+  computeTelemetry(landmarks: number[][], timestamp: number): LiveArticulatoryTelemetry | undefined {
+    if (!landmarks || landmarks.length < 468) return undefined;
+
+    const pEyeL = landmarks[33];
+    const pEyeR = landmarks[263];
+    const eyeDist = Math.hypot(pEyeL[0] - pEyeR[0], pEyeL[1] - pEyeR[1]) || 0.25;
+
+    // Upper lip (13) and lower lip (14)
+    const pLipTop = landmarks[13];
+    const pLipBottom = landmarks[14];
+    const rawAperture = Math.hypot(pLipTop[0] - pLipBottom[0], pLipTop[1] - pLipBottom[1]);
+    const apertureRatio = Math.min(1.0, rawAperture / eyeDist);
+
+    // Left mouth corner (61) and right mouth corner (291)
+    const pCornerL = landmarks[61];
+    const pCornerR = landmarks[291];
+    const rawWidth = Math.hypot(pCornerL[0] - pCornerR[0], pCornerL[1] - pCornerR[1]);
+    const widthRatio = Math.min(1.5, rawWidth / eyeDist);
+
+    // Bilateral corner symmetry relative to nose bridge (168)
+    const pNose = landmarks[168];
+    const distL = Math.hypot(pCornerL[0] - pNose[0], pCornerL[1] - pNose[1]);
+    const distR = Math.hypot(pCornerR[0] - pNose[0], pCornerR[1] - pNose[1]);
+    const symmetryScore = Math.max(0, 1.0 - (Math.abs(distL - distR) / Math.max(distL, distR, 0.01)));
+
+    // Jaw & Chin tracking (chin tip 152, left jaw angle 397, right jaw angle 172)
+    const pChin = landmarks[152];
+    const pJawL = landmarks[397];
+    const pJawR = landmarks[172];
+    const jawWidth = Math.hypot(pJawL[0] - pJawR[0], pJawL[1] - pJawR[1]);
+    const jawDisplacementX = pChin[0] - pNose[0]; // lateral deviation from facial midline
+
+    // Real articulatory shape & viseme classification derived directly from facial geometry
+    let visemeClass = 'Neutral / Closed';
+    let visemeProbability = 0.85;
+
+    if (apertureRatio < 0.04) {
+      visemeClass = 'Bilabial [p, b, m]';
+      visemeProbability = Math.min(0.99, 0.70 + (0.04 - apertureRatio) * 7);
+    } else if (apertureRatio < 0.09 && pLipBottom[1] - pLipTop[1] < 0.035) {
+      visemeClass = 'Labiodental [f, v]';
+      visemeProbability = 0.78;
+    } else if (widthRatio < 0.78 && apertureRatio > 0.12) {
+      visemeClass = 'Rounded Vowel [o, u]';
+      visemeProbability = Math.min(0.98, 0.72 + (0.78 - widthRatio) * 2);
+    } else if (widthRatio > 1.08) {
+      visemeClass = 'Spread / High [i, e]';
+      visemeProbability = Math.min(0.98, 0.70 + (widthRatio - 1.08) * 2);
+    } else if (apertureRatio > 0.22) {
+      visemeClass = 'Open Vowel [a, ɑ]';
+      visemeProbability = Math.min(0.99, 0.75 + (apertureRatio - 0.22) * 2);
+    } else {
+      visemeClass = 'Alveolar / Dental [t, d, s, n]';
+      visemeProbability = 0.80;
+    }
+
+    return {
+      faceDetected: true,
+      landmarkCount: landmarks.length,
+      upperLipY: Math.round(pLipTop[1] * 10000) / 10000,
+      lowerLipY: Math.round(pLipBottom[1] * 10000) / 10000,
+      leftCornerX: Math.round(pCornerL[0] * 10000) / 10000,
+      leftCornerY: Math.round(pCornerL[1] * 10000) / 10000,
+      rightCornerX: Math.round(pCornerR[0] * 10000) / 10000,
+      rightCornerY: Math.round(pCornerR[1] * 10000) / 10000,
+      mouthOpeningDistance: Math.round(rawAperture * 10000) / 10000,
+      apertureRatio: Math.round(apertureRatio * 1000) / 1000,
+      widthRatio: Math.round(widthRatio * 1000) / 1000,
+      symmetryScore: Math.round(symmetryScore * 1000) / 1000,
+      chinX: Math.round(pChin[0] * 10000) / 10000,
+      chinY: Math.round(pChin[1] * 10000) / 10000,
+      chinZ: Math.round((pChin[2] || 0) * 10000) / 10000,
+      jawWidth: Math.round(jawWidth * 10000) / 10000,
+      jawDisplacementX: Math.round(jawDisplacementX * 10000) / 10000,
+      timestamp: Math.round(timestamp),
+      fps: this.rollingFps,
+      inferenceLatencyMs: this.currentInferenceMs,
+      visemeClass,
+      visemeProbability: Math.round(visemeProbability * 100) / 100
+    };
+  }
+
+  isReady(): boolean {
+    return this.isInitialized && !!this.faceMeshInstance;
   }
 
   cleanup() {
