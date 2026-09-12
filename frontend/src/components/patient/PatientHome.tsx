@@ -9,7 +9,7 @@ import { MilestoneCelebration } from './MilestoneCelebration';
 import { PracticeStreakModal } from './PracticeStreakModal';
 import { evaluateAttempt, SpeechEvaluationResult } from '../../utils/speechEvaluation';
 import { cameraApi } from '../../api/client';
-import { faceMeshTracker, LiveArticulatoryTelemetry } from '../../utils/faceMeshTracker';
+import { faceMeshTracker, LiveArticulatoryTelemetry, drawArticulatoryOverlay } from '../../utils/faceMeshTracker';
 import { 
   visualLipReader, 
   VisualPredictionResult, 
@@ -89,12 +89,19 @@ export const PatientHome: React.FC = () => {
       setLatestLandmarks(landmarks);
       if (tel) {
         setTelemetry(tel);
+        if (canvasRef.current) {
+          drawArticulatoryOverlay(canvasRef.current, landmarks, tel, attemptStateRef.current === 'listening');
+        }
         visualLipReader.processFrame(
           tel.apertureRatio, 
           tel.widthRatio, 
           tel.jawDisplacementX,
           tel.apertureVelocity,
-          tel.widthVelocity
+          tel.widthVelocity,
+          tel.jawDepressionRatio,
+          tel.jawOpeningMm,
+          tel.jawVelocity,
+          tel.jawLateralDeviationMm
         );
         const vocabList = rehabLevels.map(l => l.targetText);
         const pred = visualLipReader.decodeCurrentBuffer(currentLevel.targetText, currentLevel.language, vocabList);
@@ -851,12 +858,19 @@ export const PatientHome: React.FC = () => {
                           setLatestLandmarks(landmarks);
                           if (tel) {
                             setTelemetry(tel);
+                            if (canvasRef.current) {
+                              drawArticulatoryOverlay(canvasRef.current, landmarks, tel, attemptStateRef.current === 'listening');
+                            }
                             visualLipReader.processFrame(
                               tel.apertureRatio, 
                               tel.widthRatio, 
                               tel.jawDisplacementX,
                               tel.apertureVelocity,
-                              tel.widthVelocity
+                              tel.widthVelocity,
+                              tel.jawDepressionRatio,
+                              tel.jawOpeningMm,
+                              tel.jawVelocity,
+                              tel.jawLateralDeviationMm
                             );
                             const vocabList = rehabLevels.map(l => l.targetText);
                             const pred = visualLipReader.decodeCurrentBuffer(currentLevel.targetText, currentLevel.language, vocabList);
@@ -927,16 +941,32 @@ export const PatientHome: React.FC = () => {
                         </span>
                       </div>
 
-                      {/* Right: Aperture Opening & Head Pose Diagnostics */}
+                      {/* Right: Aperture Opening, Jaw Kinematics & Head Pose Diagnostics */}
                       <div className="inline-flex items-center gap-2.5 px-3 py-1.5 rounded-xl bg-slate-950/80 backdrop-blur-md border border-white/10 text-[11px] font-mono text-slate-200">
                         <div className="flex items-center gap-1.5">
-                          <span className="text-amber-400 font-bold">↕ {Math.round(telemetry.apertureRatio * 120)}mm</span>
+                          <span className="text-amber-400 font-bold">↕ Lip: {Math.round(telemetry.apertureRatio * 120)}mm</span>
                           <span className="text-slate-400 text-[10px]">({Math.round(telemetry.apertureRatio * 100)}%)</span>
                         </div>
+                        {telemetry.jawOpeningMm !== undefined && (
+                          <>
+                            <span className="text-white/20">|</span>
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-amber-300 font-bold">↕ Jaw: {telemetry.jawOpeningMm}mm</span>
+                            </div>
+                          </>
+                        )}
                         <span className="text-white/20">|</span>
                         <div className="flex items-center gap-1.5">
                           <span className="text-blue-400 font-bold">↔ {Math.round(telemetry.widthRatio * 100)}%</span>
                         </div>
+                        {telemetry.jawLateralDeviationMm !== undefined && Math.abs(telemetry.jawLateralDeviationMm) >= 0.5 && (
+                          <>
+                            <span className="text-white/20">|</span>
+                            <span className="text-purple-300 text-[10px]" title="Mandibular Asymmetry">
+                              ΔJ: {telemetry.jawLateralDeviationMm > 0 ? `+${telemetry.jawLateralDeviationMm}` : telemetry.jawLateralDeviationMm}mm
+                            </span>
+                          </>
+                        )}
                         {telemetry.headRollDeg !== undefined && (
                           <>
                             <span className="text-white/20">|</span>

@@ -51,3 +51,28 @@ def test_synthetic_sync_and_different_clock_rejection():
 def test_degenerate_face_rejected():
     with pytest.raises(ValueError):
         facial_features(np.zeros((468, 3)))
+
+
+def test_facial_features_jaw_metrics():
+    landmarks = np.zeros((468, 3))
+    # Eye landmarks 33 and 263 define scale
+    landmarks[33] = [0.0, 0.0, 0.0]
+    landmarks[263] = [2.0, 0.0, 0.0]  # scale = 2.0
+    # Lip landmarks 13 and 14
+    landmarks[13] = [1.0, 0.5, 0.0]
+    landmarks[14] = [1.0, 0.7, 0.0]
+    # Mouth corners 61 and 291
+    landmarks[61] = [0.5, 0.6, 0.0]
+    landmarks[291] = [1.5, 0.6, 0.0]
+    # Subnasale 2 and Chin 152
+    landmarks[2] = [1.0, 0.3, 0.0]
+    landmarks[152] = [1.1, 1.3, 0.0]  # y drop = 1.0, x dev = 0.1
+
+    res = facial_features(landmarks)
+    face = res["features"]["face"]
+    assert "jaw_depression_ratio" in face
+    assert "jaw_lateral_deviation" in face
+    assert face["jaw_lateral_deviation"] == pytest.approx(0.1 / 2.0)
+    expected_jaw_dist = np.linalg.norm(landmarks[2, :2] - landmarks[152, :2]) / 2.0
+    assert face["jaw_depression_ratio"] == pytest.approx(expected_jaw_dist)
+

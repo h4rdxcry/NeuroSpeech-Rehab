@@ -52,6 +52,10 @@ export interface FrameArticulatoryState {
   confidence: number;
   apertureVelocity?: number;
   widthVelocity?: number;
+  jawDepressionRatio?: number;
+  jawOpeningMm?: number;
+  jawLateralDeviationMm?: number;
+  jawVelocity?: number;
 }
 
 export interface VisualPredictionResult {
@@ -240,6 +244,7 @@ export class VisualLipReaderEngine {
 
   private prevApertureRatio = 0.045;
   private prevWidthRatio = 0.510;
+  private prevJawDepressionRatio = 0.70;
   private prevTimestamp = 0;
   private prevViseme: VisemeClass = VisemeClass.NEUTRAL_REST;
 
@@ -262,17 +267,32 @@ export class VisualLipReaderEngine {
     widthRatio: number, 
     jawDisplacementX: number,
     apertureVel?: number,
-    widthVel?: number
+    widthVel?: number,
+    jawDepressionRatio?: number,
+    jawOpeningMm?: number,
+    jawVelocity?: number,
+    jawLateralDeviationMm?: number
   ): FrameArticulatoryState {
     const now = performance.now();
     const dt = Math.max(0.016, (now - (this.prevTimestamp || now)) / 1000);
     const apVel = apertureVel !== undefined ? apertureVel : ((apertureRatio - this.prevApertureRatio) / dt);
     const wVel = widthVel !== undefined ? widthVel : ((widthRatio - this.prevWidthRatio) / dt);
+    const jDep = jawDepressionRatio !== undefined ? jawDepressionRatio : 0.70;
+    const jVel = jawVelocity !== undefined ? jawVelocity : ((jDep - this.prevJawDepressionRatio) / dt);
     this.prevApertureRatio = apertureRatio;
     this.prevWidthRatio = widthRatio;
+    this.prevJawDepressionRatio = jDep;
     this.prevTimestamp = now;
 
-    const classification = this.classifySingleFrame(apertureRatio, widthRatio, apVel, wVel, this.prevViseme);
+    const classification = this.classifySingleFrame(
+      apertureRatio, 
+      widthRatio, 
+      apVel, 
+      wVel, 
+      this.prevViseme,
+      jawDepressionRatio,
+      jVel
+    );
     this.prevViseme = classification.viseme;
     const mm = Math.round(apertureRatio * 120);
 
@@ -285,7 +305,11 @@ export class VisualLipReaderEngine {
       viseme: classification.viseme,
       confidence: classification.confidence,
       apertureVelocity: Math.round(apVel * 1000) / 1000,
-      widthVelocity: Math.round(wVel * 1000) / 1000
+      widthVelocity: Math.round(wVel * 1000) / 1000,
+      jawDepressionRatio,
+      jawOpeningMm,
+      jawLateralDeviationMm,
+      jawVelocity: Math.round(jVel * 1000) / 1000
     };
 
     // 1. Always maintain continuous rolling window
@@ -314,7 +338,9 @@ export class VisualLipReaderEngine {
     widthRatio: number,
     apertureVel: number = 0,
     widthVel: number = 0,
-    prevViseme?: VisemeClass
+    prevViseme?: VisemeClass,
+    jawDepressionRatio?: number,
+    jawVel: number = 0
   ): {
     viseme: VisemeClass;
     confidence: number;
@@ -371,20 +397,22 @@ export class VisualLipReaderEngine {
     const bestProb = expScores[bestViseme] / (sumExp || 1.0);
 
     // Anatomical hard limits for clear disambiguation
-    const isStationary = Math.abs(apertureVel) < 0.08 && Math.abs(widthVel) < 0.08;
+    const isStationary = Math.abs(apertureVel) < 0.08 && Math.abs(widthVel) < 0.08 && Math.abs(jawVel) < 0.08;
     // 1. Closed or resting lips
     if (apertureRatio < 0.055) {
-      if (isStationary || Math.abs(apertureVel) < 0.10) {
+      if (isStationary || (Math.abs(apertureVel) < 0.10 && Math.abs(jawVel) < 0.12)) {
         return { viseme: VisemeClass.NEUTRAL_REST, confidence: 0.95 };
       }
       return { viseme: VisemeClass.BILABIAL, confidence: 0.95 };
     }
-    // 2. Open mouth / vertical vowel opening
-    if (apertureRatio > 0.18) {
+    // 2. Open mouth / vertical vowel opening (mandibular depression fused)
+    const hasStrongJawDrop = jawDepressionRatio !== undefined && jawDepressionRatio > 0.72;
+    if (apertureRatio > 0.18 || (apertureRatio > 0.13 && hasStrongJawDrop)) {
       return { viseme: VisemeClass.OPEN_VOWEL, confidence: 0.95 };
     }
-    // 3. Lateral spread (> 0.58 on 0.50 scale)
-    if (widthRatio > 0.58 && apertureRatio < 0.16) {
+    // 3. Lateral spread (> 0.58 on 0.50 scale) with minimal jaw depression
+    const isMinimalJawDrop = jawDepressionRatio === undefined || jawDepressionRatio < 0.75;
+    if (widthRatio > 0.58 && apertureRatio < 0.16 && isMinimalJawDrop) {
       return { viseme: VisemeClass.SPREAD_VOWEL, confidence: 0.94 };
     }
     // 4. Lip rounding / pursing (< 0.44 on 0.50 scale)
@@ -432,16 +460,21 @@ export class VisualLipReaderEngine {
     let curMaxAp = 0.0;
     let curSumAp = 0.0;
     let curMaxVel = 0.0;
+    let curMaxJawMm = 0;
+    let curMaxJawVel = 0.0;
     for (const f of immediateFrames) {
       if (f.apertureRatio > curMaxAp) curMaxAp = f.apertureRatio;
       curSumAp += f.apertureRatio;
       const v = Math.abs(f.apertureVelocity || 0);
       if (v > curMaxVel) curMaxVel = v;
+      if ((f.jawOpeningMm || 0) > curMaxJawMm) curMaxJawMm = f.jawOpeningMm || 0;
+      const jv = Math.abs(f.jawVelocity || 0);
+      if (jv > curMaxJawVel) curMaxJawVel = jv;
     }
     const curAvgAp = curSumAp / (immediateFrames.length || 1);
 
-    // CRITICAL RULE 1: If mouth is currently closed (aperture < 0.058 and no active speech velocity)
-    if (curMaxAp < 0.058 && curMaxVel < 0.12) {
+    // CRITICAL RULE 1: If mouth is currently closed (aperture < 0.058, jaw opening < 4mm, and no active speech velocity)
+    if (curMaxAp < 0.058 && curMaxJawMm < 4 && curMaxVel < 0.12 && curMaxJawVel < 0.14) {
       return {
         predictedWord: 'Mouth Closed',
         visualConfidence: 0.0,
@@ -462,6 +495,9 @@ export class VisualLipReaderEngine {
     let minW = 2.0;
     let maxW = 0.0;
     let maxApVel = 0.0;
+    let minJaw = 2.0;
+    let maxJaw = 0.0;
+    let maxJawVel = 0.0;
 
     for (const f of recentWindow) {
       if (f.apertureRatio < minAp) minAp = f.apertureRatio;
@@ -470,18 +506,25 @@ export class VisualLipReaderEngine {
       if (f.widthRatio > maxW) maxW = f.widthRatio;
       const v = Math.abs(f.apertureVelocity || 0);
       if (v > maxApVel) maxApVel = v;
+      const j = f.jawDepressionRatio ?? 0.70;
+      if (j < minJaw) minJaw = j;
+      if (j > maxJaw) maxJaw = j;
+      const jv = Math.abs(f.jawVelocity || 0);
+      if (jv > maxJawVel) maxJawVel = jv;
     }
 
     const apertureRange = maxAp - minAp;
     const widthRange = maxW - minW;
+    const jawRange = maxJaw - minJaw;
 
-    // CRITICAL RULE 2: Over recent window, requires genuine vertical speech excursion, horizontal pursing/spread, or speech burst
+    // CRITICAL RULE 2: Over recent window, requires genuine vertical speech excursion, horizontal pursing/spread, speech burst, or mandibular drop
     // Note: Neutral mouth width is ~0.50 on 3D eye-normalized scale. Rounding < 0.44, Spread > 0.58.
     const hasVerticalSpeechMovement = (maxAp >= 0.095 && apertureRange >= 0.055);
     const hasHorizontalSpeechMovement = (widthRange >= 0.080 && (maxW >= 0.58 || minW <= 0.44));
     const hasVelocitySpeechBurst = (maxApVel >= 0.22 && apertureRange >= 0.040);
+    const hasMandibularSpeechMovement = (maxJaw >= 0.74 && jawRange >= 0.050) || (maxJawVel >= 0.22 && jawRange >= 0.035);
 
-    const isMotionDetected = hasVerticalSpeechMovement || hasHorizontalSpeechMovement || hasVelocitySpeechBurst;
+    const isMotionDetected = hasVerticalSpeechMovement || hasHorizontalSpeechMovement || hasVelocitySpeechBurst || hasMandibularSpeechMovement;
 
     if (!isMotionDetected) {
       const restLabel = (curAvgAp < 0.055) ? 'Mouth Closed' : 'Silent / Mouth Resting';
@@ -574,7 +617,7 @@ export class VisualLipReaderEngine {
 
       // Open vowel check: candidate requires vertical jaw opening /a, aa/
       if (candVisemes.includes(VisemeClass.OPEN_VOWEL)) {
-        if (collapsed.includes(VisemeClass.OPEN_VOWEL) || maxAp > 0.16) {
+        if (collapsed.includes(VisemeClass.OPEN_VOWEL) || maxAp > 0.16 || maxJaw >= 0.73) {
           candBoost += 0.12;
           candFeedback = 'Clear open vowel projection!';
         } else {

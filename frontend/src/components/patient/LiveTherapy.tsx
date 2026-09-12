@@ -10,7 +10,7 @@ import { KeyboardShortcutsModal } from './KeyboardShortcutsModal';
 import { PracticeStreakModal } from './PracticeStreakModal';
 import { evaluateAttempt, SpeechEvaluationResult } from '../../utils/speechEvaluation';
 import { cameraApi } from '../../api/client';
-import { faceMeshTracker, LiveArticulatoryTelemetry } from '../../utils/faceMeshTracker';
+import { faceMeshTracker, LiveArticulatoryTelemetry, drawArticulatoryOverlay } from '../../utils/faceMeshTracker';
 import { 
   visualLipReader, 
   VisualPredictionResult, 
@@ -115,7 +115,11 @@ export const LiveTherapy: React.FC = () => {
           tel.widthRatio, 
           tel.jawDisplacementX,
           tel.apertureVelocity,
-          tel.widthVelocity
+          tel.widthVelocity,
+          tel.jawDepressionRatio,
+          tel.jawOpeningMm,
+          tel.jawVelocity,
+          tel.jawLateralDeviationMm
         );
         const vocabList = rehabLevels.map(l => l.targetText);
         const pred = visualLipReader.decodeCurrentBuffer(currentLevel.targetText, currentLevel.language, vocabList);
@@ -248,166 +252,7 @@ export const LiveTherapy: React.FC = () => {
 
       if (hasPermissions && cameraStatus === 'ready') {
         if (faceDetected && latestLandmarks.length >= 468) {
-          const outerLips = [61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291, 375, 321, 405, 314, 17, 84, 181, 91, 146];
-          const innerLips = [78, 191, 80, 81, 82, 13, 312, 311, 310, 415, 308, 324, 318, 402, 317, 14, 87, 178, 88, 95];
-          const jawline = [234, 93, 132, 58, 172, 136, 150, 149, 176, 148, 152, 377, 400, 378, 379, 365, 397, 288, 361, 323, 454];
-
-          ctx.save();
-
-          // 1. Dynamic Vermilion Contour Fill (translucent fill between outer and inner vermilion borders)
-          ctx.beginPath();
-          outerLips.forEach((idx, i) => {
-            const pt = latestLandmarks[idx];
-            if (!pt) return;
-            if (i === 0) ctx.moveTo(pt[0] * w, pt[1] * h);
-            else ctx.lineTo(pt[0] * w, pt[1] * h);
-          });
-          ctx.closePath();
-          innerLips.forEach((idx, i) => {
-            const pt = latestLandmarks[idx];
-            if (!pt) return;
-            if (i === 0) ctx.moveTo(pt[0] * w, pt[1] * h);
-            else ctx.lineTo(pt[0] * w, pt[1] * h);
-          });
-          ctx.closePath();
-          ctx.fillStyle = attemptState === 'listening' 
-            ? 'rgba(16, 185, 129, 0.22)' 
-            : 'rgba(56, 189, 248, 0.18)';
-          ctx.fill('evenodd');
-
-          // 2. Draw JAWLINE & CHIN CONTOUR in Cyan/Teal (#06B6D4)
-          ctx.beginPath();
-          jawline.forEach((idx, i) => {
-            const pt = latestLandmarks[idx];
-            if (!pt) return;
-            const px = pt[0] * w;
-            const py = pt[1] * h;
-            if (i === 0) ctx.moveTo(px, py);
-            else ctx.lineTo(px, py);
-          });
-          ctx.strokeStyle = '#06B6D4';
-          ctx.lineWidth = 2.2;
-          ctx.shadowColor = 'rgba(6, 182, 212, 0.6)';
-          ctx.shadowBlur = 6;
-          ctx.stroke();
-
-          // 3. Dynamic Jaw Displacement Vector (Nose tip 1 to Chin tip 152)
-          const pNoseTip = latestLandmarks[1];
-          const pChin = latestLandmarks[152];
-          if (pNoseTip && pChin) {
-            ctx.beginPath();
-            ctx.setLineDash([3, 4]);
-            ctx.moveTo(pNoseTip[0] * w, pNoseTip[1] * h);
-            ctx.lineTo(pChin[0] * w, pChin[1] * h);
-            ctx.strokeStyle = 'rgba(6, 182, 212, 0.75)';
-            ctx.lineWidth = 1.8;
-            ctx.stroke();
-            ctx.setLineDash([]);
-
-            // Chin tip target circle
-            ctx.beginPath();
-            ctx.arc(pChin[0] * w, pChin[1] * h, 5, 0, Math.PI * 2);
-            ctx.fillStyle = '#06B6D4';
-            ctx.fill();
-            ctx.strokeStyle = '#FFFFFF';
-            ctx.lineWidth = 2;
-            ctx.stroke();
-          }
-
-          // 4. Outer Lips with high-contrast neon styling
-          ctx.beginPath();
-          outerLips.forEach((idx, i) => {
-            const pt = latestLandmarks[idx];
-            if (!pt) return;
-            const px = pt[0] * w;
-            const py = pt[1] * h;
-            if (i === 0) ctx.moveTo(px, py);
-            else ctx.lineTo(px, py);
-          });
-          ctx.closePath();
-          ctx.strokeStyle = attemptState === 'listening' ? '#10B981' : '#38BDF8';
-          ctx.lineWidth = 2.5;
-          ctx.shadowColor = attemptState === 'listening' ? 'rgba(16, 185, 129, 0.7)' : 'rgba(56, 189, 248, 0.7)';
-          ctx.shadowBlur = 8;
-          ctx.stroke();
-
-          // 5. Inner Lips
-          ctx.beginPath();
-          innerLips.forEach((idx, i) => {
-            const pt = latestLandmarks[idx];
-            if (!pt) return;
-            const px = pt[0] * w;
-            const py = pt[1] * h;
-            if (i === 0) ctx.moveTo(px, py);
-            else ctx.lineTo(px, py);
-          });
-          ctx.closePath();
-          ctx.strokeStyle = attemptState === 'listening' ? '#34D399' : '#7DD3FC';
-          ctx.lineWidth = 1.8;
-          ctx.shadowBlur = 0;
-          ctx.stroke();
-
-          // 6. Dynamic Inner Aperture Gauge Line (Upper 13 to Lower 14)
-          const p13 = latestLandmarks[13];
-          const p14 = latestLandmarks[14];
-          if (p13 && p14) {
-            const x13 = p13[0] * w;
-            const y13 = p13[1] * h;
-            const x14 = p14[0] * w;
-            const y14 = p14[1] * h;
-
-            ctx.beginPath();
-            ctx.moveTo(x13, y13);
-            ctx.lineTo(x14, y14);
-            ctx.strokeStyle = '#FBBF24'; // Amber gauge line
-            ctx.lineWidth = 2.2;
-            ctx.stroke();
-
-            // End gauge tick marks
-            const tickW = 5;
-            ctx.beginPath();
-            ctx.moveTo(x13 - tickW, y13);
-            ctx.lineTo(x13 + tickW, y13);
-            ctx.moveTo(x14 - tickW, y14);
-            ctx.lineTo(x14 + tickW, y14);
-            ctx.strokeStyle = '#FBBF24';
-            ctx.lineWidth = 2.0;
-            ctx.stroke();
-          }
-
-          // 7. Corner Excursion Pins (Left 61 & Right 291)
-          [61, 291].forEach(idx => {
-            const pt = latestLandmarks[idx];
-            if (!pt) return;
-            const px = pt[0] * w;
-            const py = pt[1] * h;
-            ctx.beginPath();
-            ctx.arc(px, py, 6, 0, Math.PI * 2);
-            ctx.strokeStyle = attemptState === 'listening' ? '#10B981' : '#38BDF8';
-            ctx.lineWidth = 2;
-            ctx.stroke();
-
-            ctx.beginPath();
-            ctx.arc(px, py, 2.5, 0, Math.PI * 2);
-            ctx.fillStyle = '#FFFFFF';
-            ctx.fill();
-          });
-
-          // 8. Key Articulatory Landmark Points
-          [0, 13, 14, 17, 78, 308].forEach(idx => {
-            const pt = latestLandmarks[idx];
-            if (!pt) return;
-            const px = pt[0] * w;
-            const py = pt[1] * h;
-            ctx.beginPath();
-            ctx.arc(px, py, 3, 0, Math.PI * 2);
-            ctx.fillStyle = '#FFFFFF';
-            ctx.fill();
-            ctx.strokeStyle = '#0284C7';
-            ctx.lineWidth = 1.5;
-            ctx.stroke();
-          });
-          ctx.restore();
+          drawArticulatoryOverlay(canvas, latestLandmarks, telemetry, attemptState === 'listening');
         } else {
           // Positioning guide when face is not yet tracked
           const centerX = w / 2;
@@ -1305,7 +1150,11 @@ export const LiveTherapy: React.FC = () => {
                         tel.widthRatio, 
                         tel.jawDisplacementX,
                         tel.apertureVelocity,
-                        tel.widthVelocity
+                        tel.widthVelocity,
+                        tel.jawDepressionRatio,
+                        tel.jawOpeningMm,
+                        tel.jawVelocity,
+                        tel.jawLateralDeviationMm
                       );
                       const vocabList = rehabLevels.map(l => l.targetText);
                       const pred = visualLipReader.decodeCurrentBuffer(currentLevel.targetText, currentLevel.language, vocabList);
@@ -1376,16 +1225,32 @@ export const LiveTherapy: React.FC = () => {
                   </span>
                 </div>
 
-                {/* Right: Aperture Opening & Head Pose Diagnostics */}
+                {/* Right: Aperture Opening, Jaw Kinematics & Head Pose Diagnostics */}
                 <div className="inline-flex items-center gap-2.5 px-3 py-1.5 rounded-xl bg-slate-950/80 backdrop-blur-md border border-white/10 text-[11px] font-mono text-slate-200">
                   <div className="flex items-center gap-1.5">
-                    <span className="text-amber-400 font-bold">↕ {Math.round(telemetry.apertureRatio * 120)}mm</span>
+                    <span className="text-amber-400 font-bold">↕ Lip: {Math.round(telemetry.apertureRatio * 120)}mm</span>
                     <span className="text-slate-400 text-[10px]">({Math.round(telemetry.apertureRatio * 100)}%)</span>
                   </div>
+                  {telemetry.jawOpeningMm !== undefined && (
+                    <>
+                      <span className="text-white/20">|</span>
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-amber-300 font-bold">↕ Jaw: {telemetry.jawOpeningMm}mm</span>
+                      </div>
+                    </>
+                  )}
                   <span className="text-white/20">|</span>
                   <div className="flex items-center gap-1.5">
                     <span className="text-blue-400 font-bold">↔ {Math.round(telemetry.widthRatio * 100)}%</span>
                   </div>
+                  {telemetry.jawLateralDeviationMm !== undefined && Math.abs(telemetry.jawLateralDeviationMm) >= 0.5 && (
+                    <>
+                      <span className="text-white/20">|</span>
+                      <span className="text-purple-300 text-[10px]" title="Mandibular Asymmetry">
+                        ΔJ: {telemetry.jawLateralDeviationMm > 0 ? `+${telemetry.jawLateralDeviationMm}` : telemetry.jawLateralDeviationMm}mm
+                      </span>
+                    </>
+                  )}
                   {telemetry.headRollDeg !== undefined && (
                     <>
                       <span className="text-white/20">|</span>

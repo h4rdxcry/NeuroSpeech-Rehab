@@ -112,6 +112,8 @@ def facial_features(landmarks):
         raise ValueError("Degenerate facial geometry")
     return {"pipeline_version": PIPELINE_VERSION,
             "features": {"face": {"lip_aperture_ratio": float(np.linalg.norm(p[13, :2]-p[14, :2])/scale),
-                                    "mouth_width_ratio": float(np.linalg.norm(p[61, :2]-p[291, :2])/scale)}},
+                                  "mouth_width_ratio": float(np.linalg.norm(p[61, :2]-p[291, :2])/scale),
+                                  "jaw_depression_ratio": float(np.linalg.norm(p[2, :2]-p[152, :2])/scale),
+                                  "jaw_lateral_deviation": float((p[152, 0]-p[2, 0])/scale)}},
             "quality": {"state": "ACCEPTABLE", "limitations": "Geometry validity only; tracker confidence not inferred."},
             "research_only": True}
